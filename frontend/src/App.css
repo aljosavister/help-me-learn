@@ -85,15 +85,14 @@ body {
   border: 1px solid transparent;
   color: inherit;
   border-radius: 2rem;
-  padding: 0.6rem 1.1rem;
+  padding: 0.6rem 1rem 0.6rem 1.3rem;
   cursor: pointer;
   transition: all 0.2s ease;
-  text-align: left;
-  min-width: 110px;
+  min-width: 150px;
   position: relative;
-  display: inline-flex;
-  flex-direction: column;
-  padding-right: 2.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
 }
 
 .pill span {
@@ -108,16 +107,18 @@ body {
 }
 
 .pill .remove-btn {
-  position: absolute;
-  top: 0.3rem;
-  right: 0.4rem;
+  margin-left: auto;
   background: transparent;
   border: none;
   color: rgba(255, 255, 255, 0.6);
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   cursor: pointer;
-  padding: 0;
+  padding: 0.1rem 0.3rem;
   line-height: 1;
+}
+
+.pill .remove-btn:hover {
+  color: #ff8b8b;
 }
 .pill.active {
   border-color: #7c6bff;

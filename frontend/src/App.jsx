@@ -374,27 +374,41 @@ function App() {
             <p>Začni tako, da ustvariš prvega uporabnika.</p>
           ) : (
             <div className="pill-list">
-              {users.map((user) => (
-                <button
-                  key={user.id}
-                  className={`pill ${selectedUser?.id === user.id ? 'active' : ''}`}
-                  onClick={() => setSelectedUser(user)}
-                >
-                  <span>{user.name}</span>
-                  <span className="pill-meta">ID: {user.id}</span>
-                  <button
-                    type="button"
-                    className="remove-btn"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      handleDeleteUser(user.id)
+              {users.map((user) => {
+                const isActive = selectedUser?.id === user.id
+                return (
+                  <div
+                    key={user.id}
+                    className={`pill ${isActive ? 'active' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedUser(user)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setSelectedUser(user)
+                      }
                     }}
-                    disabled={isBusy}
                   >
-                    ✕
-                  </button>
-                </button>
-              ))}
+                    <div>
+                      <span>{user.name}</span>
+                      <span className="pill-meta">ID: {user.id}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="remove-btn"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        handleDeleteUser(user.id)
+                      }}
+                      disabled={isBusy}
+                      aria-label={`Izbriši uporabnika ${user.name}`}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           )}
           <form className="inline-form" onSubmit={handleCreateUser}>

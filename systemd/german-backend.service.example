@@ -1,0 +1,14 @@
+[Unit]
+Description=German Trainer FastAPI
+After=network.target
+
+[Service]
+# <<< prilagodi poti in uporabnika >>>
+WorkingDirectory=/home/USER/help-me-learn
+Environment="PYTHONPATH=/home/USER/help-me-learn"
+ExecStart=/home/USER/help-me-learn/.venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+User=USER
+
+[Install]
+WantedBy=multi-user.target

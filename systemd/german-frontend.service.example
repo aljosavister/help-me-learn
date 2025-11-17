@@ -1,0 +1,13 @@
+[Unit]
+Description=German Trainer Frontend (static build)
+After=network.target
+
+[Service]
+# Pred zagonom zgradi frontend: VITE_API_BASE=http://SERVER:8000 npm run build
+WorkingDirectory=/home/USER/help-me-learn
+ExecStart=/usr/local/bin/serve -s frontend/dist -l 4173
+Restart=on-failure
+User=USER
+
+[Install]
+WantedBy=multi-user.target
