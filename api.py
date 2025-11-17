@@ -13,7 +13,7 @@ import random
 import sqlite3
 from typing import Dict, Generator, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -358,7 +358,8 @@ def user_stats(
         cycle_count=cycle_count,
     )
 @app.delete("/users/{user_id}", status_code=204)
-def delete_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> None:
+def delete_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> Response:
     ensure_user(conn, user_id)
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
+    return Response(status_code=204)
