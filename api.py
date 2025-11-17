@@ -13,7 +13,7 @@ import random
 import sqlite3
 from typing import Dict, Generator, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -147,6 +147,12 @@ class StatsOut(BaseModel):
     reveals: int
     accuracy: float
     cycle_count: int
+
+
+class ImportResult(BaseModel):
+    added: int
+    skipped: int
+    errors: List[str]
 
 
 class DeleteUserRequest(BaseModel):
@@ -357,6 +363,23 @@ def user_stats(
         accuracy=accuracy,
         cycle_count=cycle_count,
     )
+
+
+@app.post("/import/{word_type}", response_model=ImportResult)
+async def import_csv_endpoint(
+    word_type: WordType,
+    file: UploadFile = File(...),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ImportResult:
+    if file.content_type not in {"text/csv", "application/vnd.ms-excel", "application/octet-stream"}:
+        raise HTTPException(status_code=400, detail="Pričakovana je CSV datoteka.")
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    result = learn.import_csv_text(conn, word_type, text)
+    return ImportResult(added=result["added"], skipped=result["skipped"], errors=result["errors"])
 @app.delete("/users/{user_id}", status_code=204)
 def delete_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> Response:
     ensure_user(conn, user_id)

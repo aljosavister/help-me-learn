@@ -14,13 +14,12 @@ import random
 import sqlite3
 import sys
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "learning.db"
-CSV_NOUNS = BASE_DIR / "samostalniki.csv"
-CSV_VERBS = BASE_DIR / "n-glagoli.csv"
 
 ADAPTIVE_AFTER_CYCLES = 5
 MIN_ATTEMPTS_FOR_ADAPTIVE = 25
@@ -30,6 +29,8 @@ EASY_REVIEW_FRACTION = 0.25  # share of "easy" cards kept in adaptive cycles
 QUIT_COMMANDS = {"q", "quit", "exit"}
 SHOW_COMMANDS = {"?", "help", "pomoc", "answer", "odgovor"}
 SKIP_COMMANDS = {"skip", "naprej", "s"}
+NOUN_LABELS = ["člen + samostalnik"]
+VERB_LABELS = ["infinitiv", "3. oseba ednine", "preterit", "perfekt"]
 
 USE_COLORS = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 COLOR_RESET = "\033[0m"
@@ -114,104 +115,96 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def seed_items(conn: sqlite3.Connection) -> None:
-    cur = conn.cursor()
-    noun_count = cur.execute(
-        "SELECT COUNT(*) FROM items WHERE type='noun'"
-    ).fetchone()[0]
-    verb_count = cur.execute(
-        "SELECT COUNT(*) FROM items WHERE type='verb'"
-    ).fetchone()[0]
-
-    if noun_count == 0:
-        insert_nouns(conn, CSV_NOUNS)
-    if verb_count == 0:
-        insert_verbs(conn, CSV_VERBS)
-    conn.commit()
+def parse_csv_content(text: str) -> List[List[str]]:
+    reader = csv.reader(StringIO(text))
+    rows: List[List[str]] = []
+    for row in reader:
+        if not row or not any(cell.strip() for cell in row):
+            continue
+        rows.append([cell.strip() for cell in row])
+    return rows
 
 
-def insert_nouns(conn: sqlite3.Connection, csv_path: Path) -> None:
-    if not csv_path.exists():
-        print(f"Opozorilo: datoteka {csv_path} ne obstaja.", file=sys.stderr)
-        return
-    with csv_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle)
-        data: List[Tuple[str, str]] = []
-        for row in reader:
-            if not row:
-                continue
-            if len(row) < 2:
-                continue
-            term, translation = row[0].strip(), row[1].strip()
-            if not term or not translation:
-                continue
-            data.append((term, translation))
-
-    labels = ["člen + samostalnik"]
-    for term, translation in data:
+def build_noun_records(rows: List[List[str]]) -> Tuple[List[Tuple[str, str, str, str]], List[str]]:
+    records: List[Tuple[str, str, str, str]] = []
+    errors: List[str] = []
+    for idx, row in enumerate(rows, start=1):
+        if len(row) < 2:
+            errors.append(f"Vrstica {idx}: pričakovana sta vsaj 2 stolpca.")
+            continue
+        term, translation = row[0], row[1]
+        if not term or not translation:
+            errors.append(f"Vrstica {idx}: prazna vrednost.")
+            continue
         bits = term.split()
-        article = bits[0]
+        article = bits[0] if bits else ""
         lemma = " ".join(bits[1:]) if len(bits) > 1 else ""
         metadata = {
             "article": article,
             "lemma": lemma,
-            "labels": labels,
+            "labels": NOUN_LABELS,
         }
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO items (type, keyword, translation, solution_json, metadata_json)
-            VALUES ('noun', ?, ?, ?, ?)
-            """,
+        records.append(
             (
                 term.lower(),
                 translation,
                 json.dumps([term]),
                 json.dumps(metadata),
-            ),
+            )
         )
+    return records, errors
 
 
-def insert_verbs(conn: sqlite3.Connection, csv_path: Path) -> None:
-    if not csv_path.exists():
-        print(f"Opozorilo: datoteka {csv_path} ne obstaja.", file=sys.stderr)
-        return
-    with csv_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle)
-        data: List[Tuple[str, str, str, str, str]] = []
-        for row in reader:
-            if not row:
-                continue
-            if len(row) < 5:
-                continue
-            infinitive = row[0].strip()
-            third_person = row[1].strip()
-            preterite = row[2].strip()
-            perfect = row[3].strip()
-            translation = row[4].strip()
-            if not infinitive or not translation:
-                continue
-            data.append((infinitive, third_person, preterite, perfect, translation))
-
-    labels = [
-        "infinitiv",
-        "3. oseba ednine",
-        "preterit",
-        "perfekt",
-    ]
-    for infinitive, third_person, preterite, perfect, translation in data:
-        metadata = {"labels": labels}
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO items (type, keyword, translation, solution_json, metadata_json)
-            VALUES ('verb', ?, ?, ?, ?)
-            """,
+def build_verb_records(rows: List[List[str]]) -> Tuple[List[Tuple[str, str, str, str]], List[str]]:
+    records: List[Tuple[str, str, str, str]] = []
+    errors: List[str] = []
+    for idx, row in enumerate(rows, start=1):
+        if len(row) < 5:
+            errors.append(f"Vrstica {idx}: pričakovanih je 5 stolpcev.")
+            continue
+        infinitive, third_person, preterite, perfect, translation = row[:5]
+        if not infinitive or not translation:
+            errors.append(f"Vrstica {idx}: manjkajoča oblika ali prevod.")
+            continue
+        metadata = {"labels": VERB_LABELS}
+        records.append(
             (
                 infinitive.lower(),
                 translation,
                 json.dumps([infinitive, third_person, preterite, perfect]),
                 json.dumps(metadata),
-            ),
+            )
         )
+    return records, errors
+
+
+def import_records(conn: sqlite3.Connection, word_type: str, records: List[Tuple[str, str, str, str]]) -> Tuple[int, int]:
+    added = 0
+    skipped = 0
+    for keyword, translation, solution_json, metadata_json in records:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO items (type, keyword, translation, solution_json, metadata_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (word_type, keyword, translation, solution_json, metadata_json),
+        )
+        if cur.rowcount:
+            added += 1
+        else:
+            skipped += 1
+    conn.commit()
+    return added, skipped
+
+
+def import_csv_text(conn: sqlite3.Connection, word_type: str, content: str) -> Dict[str, object]:
+    rows = parse_csv_content(content)
+    if word_type == "noun":
+        records, errors = build_noun_records(rows)
+    else:
+        records, errors = build_verb_records(rows)
+    added, skipped = import_records(conn, word_type, records)
+    return {"added": added, "skipped": skipped, "errors": errors}
 
 
 def prompt_username() -> str:
@@ -388,8 +381,8 @@ def get_labels(word_type: str, metadata: Dict) -> List[str]:
     if stored:
         return stored
     if word_type == "verb":
-        return ["infinitiv", "3. oseba ednine", "preterit", "perfekt"]
-    return ["člen + samostalnik"]
+        return VERB_LABELS
+    return NOUN_LABELS
 
 
 def ask_yes_no(prompt: str) -> bool:
@@ -638,7 +631,6 @@ def main() -> None:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     ensure_schema(conn)
-    seed_items(conn)
 
     print("Nemški trener (samostalniki + nepravilni glagoli)")
     username = prompt_username()

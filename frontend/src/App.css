@@ -75,9 +75,16 @@ body {
 
 .pill-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.7rem;
   margin-bottom: 1rem;
+}
+
+.module-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .pill {
@@ -148,6 +155,19 @@ body {
   color: #9ab0d1;
   font-size: 0.9rem;
   margin-top: -0.4rem;
+}
+
+.csv-btn {
+  padding: 0.55rem 0.9rem;
+  height: fit-content;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #d9e2ff;
+  font-size: 0.85rem;
+}
+
+.csv-btn:hover {
+  border-color: #7c6bff;
 }
 
 .btn {
@@ -342,6 +362,12 @@ body {
   background: rgba(255, 71, 87, 0.15);
   border: 1px solid rgba(255, 71, 87, 0.4);
   color: #ffccd5;
+}
+
+.alert.info {
+  background: rgba(125, 200, 255, 0.12);
+  border: 1px solid rgba(125, 200, 255, 0.4);
+  color: #d7f2ff;
 }
 
 .empty-state {

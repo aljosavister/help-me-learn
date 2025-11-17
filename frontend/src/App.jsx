@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
@@ -7,11 +7,15 @@ const normalizeText = (text) =>
   text.trim().toLowerCase().replace(/ß/g, 'ss').replace(/\s+/g, ' ')
 
 async function apiFetch(path, options = {}) {
+  const isFormData =
+    typeof FormData !== 'undefined' && options.body instanceof FormData
+  const defaultHeaders = isFormData ? {} : { 'Content-Type': 'application/json' }
+  const headers = { ...defaultHeaders, ...(options.headers || {}) }
   const fetchOptions = {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
+    headers,
   }
-  if (fetchOptions.body && typeof fetchOptions.body !== 'string') {
+  if (fetchOptions.body && typeof fetchOptions.body !== 'string' && !isFormData) {
     fetchOptions.body = JSON.stringify(fetchOptions.body)
   }
   const response = await fetch(`${API_BASE}${path}`, fetchOptions)
@@ -43,6 +47,10 @@ function App() {
   const [isBusy, setIsBusy] = useState(false)
   const [stats, setStats] = useState(null)
   const [isLoadingData, setIsLoadingData] = useState(false)
+  const [importSummary, setImportSummary] = useState(null)
+  const [isImporting, setIsImporting] = useState(false)
+  const nounInputRef = useRef(null)
+  const verbInputRef = useRef(null)
 
   const currentQuestion = cycle ? cycle.items[currentIndex] : null
   const isLastQuestion = cycle ? currentIndex === cycle.items.length - 1 : false
@@ -128,6 +136,43 @@ function App() {
       setError(err.message)
     } finally {
       setIsBusy(false)
+    }
+  }
+
+  const triggerCsvDialog = (wordType) => {
+    const ref = wordType === 'noun' ? nounInputRef : verbInputRef
+    if (ref.current) {
+      ref.current.value = ''
+      ref.current.click()
+    }
+  }
+
+  const handleCsvFileChange = (wordType, event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    uploadCsv(wordType, file)
+  }
+
+  const uploadCsv = async (wordType, file) => {
+    setImportSummary(null)
+    setError('')
+    setIsImporting(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const result = await apiFetch(`/import/${wordType}`, {
+        method: 'POST',
+        body: formData,
+      })
+      setImportSummary({
+        ...result,
+        fileName: file.name,
+        wordType,
+      })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsImporting(false)
     }
   }
 
@@ -447,15 +492,38 @@ function App() {
           <h2>2. Izberi sklop</h2>
           <div className="pill-list">
             {modules.map((module) => (
-              <button
-                key={module.type}
-                className={`pill ${selectedModule === module.type ? 'active' : ''}`}
-                onClick={() => setSelectedModule(module.type)}
-              >
-                <strong>{module.label}</strong>
-                <span>{module.description}</span>
-              </button>
+              <div key={module.type} className="module-row">
+                <button
+                  className={`pill ${selectedModule === module.type ? 'active' : ''}`}
+                  onClick={() => setSelectedModule(module.type)}
+                >
+                  <strong>{module.label}</strong>
+                  <span>{module.description}</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn csv-btn"
+                  onClick={() => triggerCsvDialog(module.type)}
+                  disabled={isImporting}
+                >
+                  Uvozi CSV
+                </button>
+              </div>
             ))}
+            <input
+              ref={nounInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              hidden
+              onChange={(event) => handleCsvFileChange('noun', event)}
+            />
+            <input
+              ref={verbInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              hidden
+              onChange={(event) => handleCsvFileChange('verb', event)}
+            />
           </div>
           <button
             className="btn primary full"
@@ -464,6 +532,24 @@ function App() {
           >
             Zaženi nov cikel
           </button>
+          {importSummary && (
+            <div className="alert info">
+              CSV ({importSummary.wordType === 'noun' ? 'samostalniki' : 'glagoli'}) –{' '}
+              <strong>{importSummary.fileName}</strong> | dodanih {importSummary.added}, preskočenih{' '}
+              {importSummary.skipped}
+              {importSummary.errors?.length ? (
+                <details>
+                  <summary>Napake ({importSummary.errors.length})</summary>
+                  <ul>
+                    {importSummary.errors.slice(0, 5).map((msg) => (
+                      <li key={msg}>{msg}</li>
+                    ))}
+                  </ul>
+                  {importSummary.errors.length > 5 && <p>... in še {importSummary.errors.length - 5}</p>}
+                </details>
+              ) : null}
+            </div>
+          )}
           {stats && (
             <div className="stats-box">
               <h3>Statistika ({stats.word_type === 'noun' ? 'samostalniki' : 'glagoli'})</h3>
