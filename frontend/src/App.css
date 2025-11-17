@@ -370,6 +370,15 @@ body {
   color: #d7f2ff;
 }
 
+.close-alert {
+  margin-left: 0.8rem;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
 .empty-state {
   text-align: center;
   padding: 2rem;

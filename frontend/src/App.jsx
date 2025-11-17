@@ -548,6 +548,9 @@ function App() {
                   {importSummary.errors.length > 5 && <p>... in še {importSummary.errors.length - 5}</p>}
                 </details>
               ) : null}
+              <button type="button" className="close-alert" onClick={() => setImportSummary(null)}>
+                ×
+              </button>
             </div>
           )}
           {stats && (

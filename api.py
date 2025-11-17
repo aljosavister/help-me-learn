@@ -80,6 +80,7 @@ class ModuleOut(BaseModel):
     type: WordType
     label: str
     description: str
+    count: int
 
 
 class CycleRequest(BaseModel):
@@ -185,10 +186,22 @@ def get_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> UserOu
 
 
 @app.get("/modules", response_model=List[ModuleOut])
-def list_modules() -> List[ModuleOut]:
+def list_modules(conn: sqlite3.Connection = Depends(get_db)) -> List[ModuleOut]:
+    rows = conn.execute("SELECT type, COUNT(*) AS cnt FROM items GROUP BY type").fetchall()
+    counts = {row["type"]: row["cnt"] for row in rows}
     return [
-        ModuleOut(type="noun", label="Samostalniki", description="Člen in samostalnik v eni vrstici."),
-        ModuleOut(type="verb", label="Nepravilni glagoli", description="4 oblike: infinitiv, 3. oseba, preterit, perfekt."),
+        ModuleOut(
+            type="noun",
+            label="Samostalniki",
+            description="Člen + beseda",
+            count=counts.get("noun", 0),
+        ),
+        ModuleOut(
+            type="verb",
+            label="Nepravilni glagoli",
+            description="Inf., 3., pret., perf.",
+            count=counts.get("verb", 0),
+        ),
     ]
 
 
