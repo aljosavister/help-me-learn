@@ -169,6 +169,8 @@ function App() {
         fileName: file.name,
         wordType,
       })
+      const moduleData = await apiFetch('/modules')
+      setModules(moduleData)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -497,7 +499,9 @@ function App() {
                   className={`pill ${selectedModule === module.type ? 'active' : ''}`}
                   onClick={() => setSelectedModule(module.type)}
                 >
-                  <strong>{module.label}</strong>
+                  <strong>
+                    {module.label} ({module.count})
+                  </strong>
                   <span>{module.description}</span>
                 </button>
                 <button
