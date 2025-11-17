@@ -112,6 +112,25 @@ function App() {
     }
   }
 
+  const handleDeleteUser = async (userId) => {
+    if (!window.confirm('Ali res želiš izbrisati tega uporabnika?')) return
+    setError('')
+    setIsBusy(true)
+    try {
+      await apiFetch(`/users/${userId}`, { method: 'DELETE' })
+      setUsers((prev) => prev.filter((user) => user.id !== userId))
+      if (selectedUser?.id === userId) {
+        setSelectedUser(null)
+        setCycle(null)
+        setStats(null)
+      }
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
   const handleStartCycle = async () => {
     if (!selectedUser || !selectedModule) return
     setIsBusy(true)
@@ -480,21 +499,3 @@ function App() {
 }
 
 export default App
-  const handleDeleteUser = async (userId) => {
-    if (!window.confirm('Ali res želiš izbrisati tega uporabnika?')) return
-    setError('')
-    setIsBusy(true)
-    try {
-      await apiFetch(`/users/${userId}`, { method: 'DELETE' })
-      setUsers((prev) => prev.filter((user) => user.id !== userId))
-      if (selectedUser?.id === userId) {
-        setSelectedUser(null)
-        setCycle(null)
-        setStats(null)
-      }
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setIsBusy(false)
-    }
-  }
