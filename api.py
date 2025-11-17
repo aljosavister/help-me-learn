@@ -193,13 +193,13 @@ def list_modules(conn: sqlite3.Connection = Depends(get_db)) -> List[ModuleOut]:
         ModuleOut(
             type="noun",
             label="Samostalniki",
-            description="Člen + beseda",
+            description="",
             count=counts.get("noun", 0),
         ),
         ModuleOut(
             type="verb",
             label="Nepravilni glagoli",
-            description="Inf., 3., pret., perf.",
+            description="",
             count=counts.get("verb", 0),
         ),
     ]

@@ -524,7 +524,6 @@ function App() {
                   <strong>
                     {module.label} ({module.count})
                   </strong>
-                  <span>{module.description}</span>
                 </button>
                 <button
                   type="button"
@@ -540,7 +539,7 @@ function App() {
                   onClick={() => toggleModuleItems(module.type)}
                   disabled={isLoadingItems}
                 >
-                  {moduleItemsType === module.type ? 'Skrij seznam' : 'Pokaži seznam'}
+                  Pokaži seznam
                 </button>
               </div>
             ))}
@@ -614,24 +613,50 @@ function App() {
             </div>
           )}
           {moduleItemsType && (
-            <div className="items-box">
-              <div className="items-header">
-                Seznam ({moduleItemsType === 'noun' ? 'samostalniki' : 'glagoli'}) · {moduleItems.length}
+            <div
+              className="modal-backdrop"
+              onClick={(event) => {
+                if (event.target.classList.contains('modal-backdrop')) {
+                  setModuleItemsType(null)
+                  setModuleItems([])
+                }
+              }}
+            >
+              <div className="modal">
+                <div className="modal-header">
+                  <h3>
+                    {moduleItemsType === 'noun' ? 'Samostalniki' : 'Nepravilni glagoli'} · {moduleItems.length}
+                  </h3>
+                  <button
+                    type="button"
+                    className="close-modal"
+                    onClick={() => {
+                      setModuleItemsType(null)
+                      setModuleItems([])
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="modal-body">
+                  {isLoadingItems ? (
+                    <p>Nalaganje ...</p>
+                  ) : moduleItems.length === 0 ? (
+                    <p>Trenutno ni zapisov.</p>
+                  ) : (
+                    <ul className="items-list">
+                      {moduleItems.map((item) => (
+                        <li key={item.id}>
+                          <span className="term">
+                            {item.solution ? item.solution.join(' · ') : '–'}
+                          </span>
+                          <span className="translation">{item.translation}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
-              {isLoadingItems ? (
-                <p>Nalaganje ...</p>
-              ) : moduleItems.length === 0 ? (
-                <p>Trenutno ni zapisov.</p>
-              ) : (
-                <ul className="items-list">
-                  {moduleItems.map((item) => (
-                    <li key={item.id}>
-                      <span className="term">{item.solution ? item.solution.join(' · ') : '–'}</span>
-                      <span className="translation">{item.translation}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
           )}
         </div>
