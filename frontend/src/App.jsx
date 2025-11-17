@@ -49,6 +49,9 @@ function App() {
   const [isLoadingData, setIsLoadingData] = useState(false)
   const [importSummary, setImportSummary] = useState(null)
   const [isImporting, setIsImporting] = useState(false)
+  const [moduleItemsType, setModuleItemsType] = useState(null)
+  const [moduleItems, setModuleItems] = useState([])
+  const [isLoadingItems, setIsLoadingItems] = useState(false)
   const nounInputRef = useRef(null)
   const verbInputRef = useRef(null)
 
@@ -175,6 +178,25 @@ function App() {
       setError(err.message)
     } finally {
       setIsImporting(false)
+    }
+  }
+
+  const toggleModuleItems = async (wordType) => {
+    if (moduleItemsType === wordType) {
+      setModuleItemsType(null)
+      setModuleItems([])
+      return
+    }
+    setIsLoadingItems(true)
+    setError('')
+    try {
+      const data = await apiFetch(`/items?word_type=${wordType}&include_solution=true`)
+      setModuleItemsType(wordType)
+      setModuleItems(data)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsLoadingItems(false)
     }
   }
 
@@ -512,6 +534,14 @@ function App() {
                 >
                   Uvozi CSV
                 </button>
+                <button
+                  type="button"
+                  className="btn outline-btn"
+                  onClick={() => toggleModuleItems(module.type)}
+                  disabled={isLoadingItems}
+                >
+                  {moduleItemsType === module.type ? 'Skrij seznam' : 'Pokaži seznam'}
+                </button>
               </div>
             ))}
             <input
@@ -581,6 +611,27 @@ function App() {
                   Zaključeni cikli: <strong>{stats.cycle_count}</strong>
                 </li>
               </ul>
+            </div>
+          )}
+          {moduleItemsType && (
+            <div className="items-box">
+              <div className="items-header">
+                Seznam ({moduleItemsType === 'noun' ? 'samostalniki' : 'glagoli'}) · {moduleItems.length}
+              </div>
+              {isLoadingItems ? (
+                <p>Nalaganje ...</p>
+              ) : moduleItems.length === 0 ? (
+                <p>Trenutno ni zapisov.</p>
+              ) : (
+                <ul className="items-list">
+                  {moduleItems.map((item) => (
+                    <li key={item.id}>
+                      <span className="term">{item.solution ? item.solution.join(' · ') : '–'}</span>
+                      <span className="translation">{item.translation}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
         </div>
