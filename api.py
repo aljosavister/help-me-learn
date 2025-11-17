@@ -44,7 +44,6 @@ def _init_database() -> None:
     conn = _connect_db()
     conn.row_factory = sqlite3.Row
     learn.ensure_schema(conn)
-    learn.seed_items(conn)
     conn.close()
 
 
