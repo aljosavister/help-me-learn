@@ -1,0 +1,661 @@
+#!/usr/bin/env python3
+"""
+Console tutor for German irregular verbs and nouns based on CSV sources.
+
+The program builds a SQLite database on first run, imports the vocabulary,
+tracks user performance, and adapts the questioning strategy over time.
+"""
+from __future__ import annotations
+
+import csv
+import json
+import os
+import random
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "learning.db"
+CSV_NOUNS = BASE_DIR / "samostalniki.csv"
+CSV_VERBS = BASE_DIR / "n-glagoli.csv"
+
+ADAPTIVE_AFTER_CYCLES = 5
+MIN_ATTEMPTS_FOR_ADAPTIVE = 25
+HIGH_ACCURACY_THRESHOLD = 0.88
+EASY_REVIEW_FRACTION = 0.25  # share of "easy" cards kept in adaptive cycles
+
+QUIT_COMMANDS = {"q", "quit", "exit"}
+SHOW_COMMANDS = {"?", "help", "pomoc", "answer", "odgovor"}
+SKIP_COMMANDS = {"skip", "naprej", "s"}
+
+USE_COLORS = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+COLOR_RESET = "\033[0m"
+COLOR_NOUN = "\033[95m"  # magenta
+COLOR_VERB = "\033[96m"  # cyan
+COLOR_TITLE = "\033[93m"  # yellow
+
+
+def color_text(content: str, color_code: str) -> str:
+    if not USE_COLORS:
+        return content
+    return f"{color_code}{content}{COLOR_RESET}"
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_text(value: str) -> str:
+    cleaned = " ".join(value.strip().lower().replace("ß", "ss").split())
+    return cleaned
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL CHECK(type IN ('noun', 'verb')),
+            keyword TEXT NOT NULL,
+            translation TEXT NOT NULL,
+            solution_json TEXT NOT NULL,
+            metadata_json TEXT,
+            UNIQUE(type, keyword)
+        );
+
+        CREATE TABLE IF NOT EXISTS user_stats (
+            user_id INTEGER NOT NULL,
+            entry_id INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            wrong INTEGER NOT NULL DEFAULT 0,
+            reveals INTEGER NOT NULL DEFAULT 0,
+            correct_streak INTEGER NOT NULL DEFAULT 0,
+            last_result TEXT,
+            last_seen TEXT,
+            PRIMARY KEY (user_id, entry_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (entry_id) REFERENCES items(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            entry_id INTEGER NOT NULL,
+            asked_at TEXT NOT NULL,
+            was_correct INTEGER NOT NULL,
+            was_revealed INTEGER NOT NULL,
+            answers_json TEXT NOT NULL,
+            cycle_number INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (entry_id) REFERENCES items(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS user_cycles (
+            user_id INTEGER NOT NULL,
+            word_type TEXT NOT NULL,
+            cycles INTEGER NOT NULL DEFAULT 0,
+            last_cycle_at TEXT,
+            PRIMARY KEY (user_id, word_type),
+            CHECK(word_type IN ('noun', 'verb')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        """
+    )
+    conn.commit()
+
+
+def seed_items(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    noun_count = cur.execute(
+        "SELECT COUNT(*) FROM items WHERE type='noun'"
+    ).fetchone()[0]
+    verb_count = cur.execute(
+        "SELECT COUNT(*) FROM items WHERE type='verb'"
+    ).fetchone()[0]
+
+    if noun_count == 0:
+        insert_nouns(conn, CSV_NOUNS)
+    if verb_count == 0:
+        insert_verbs(conn, CSV_VERBS)
+    conn.commit()
+
+
+def insert_nouns(conn: sqlite3.Connection, csv_path: Path) -> None:
+    if not csv_path.exists():
+        print(f"Opozorilo: datoteka {csv_path} ne obstaja.", file=sys.stderr)
+        return
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        data: List[Tuple[str, str]] = []
+        for row in reader:
+            if not row:
+                continue
+            if len(row) < 2:
+                continue
+            term, translation = row[0].strip(), row[1].strip()
+            if not term or not translation:
+                continue
+            data.append((term, translation))
+
+    labels = ["člen + samostalnik"]
+    for term, translation in data:
+        bits = term.split()
+        article = bits[0]
+        lemma = " ".join(bits[1:]) if len(bits) > 1 else ""
+        metadata = {
+            "article": article,
+            "lemma": lemma,
+            "labels": labels,
+        }
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO items (type, keyword, translation, solution_json, metadata_json)
+            VALUES ('noun', ?, ?, ?, ?)
+            """,
+            (
+                term.lower(),
+                translation,
+                json.dumps([term]),
+                json.dumps(metadata),
+            ),
+        )
+
+
+def insert_verbs(conn: sqlite3.Connection, csv_path: Path) -> None:
+    if not csv_path.exists():
+        print(f"Opozorilo: datoteka {csv_path} ne obstaja.", file=sys.stderr)
+        return
+    with csv_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        data: List[Tuple[str, str, str, str, str]] = []
+        for row in reader:
+            if not row:
+                continue
+            if len(row) < 5:
+                continue
+            infinitive = row[0].strip()
+            third_person = row[1].strip()
+            preterite = row[2].strip()
+            perfect = row[3].strip()
+            translation = row[4].strip()
+            if not infinitive or not translation:
+                continue
+            data.append((infinitive, third_person, preterite, perfect, translation))
+
+    labels = [
+        "infinitiv",
+        "3. oseba ednine",
+        "preterit",
+        "perfekt",
+    ]
+    for infinitive, third_person, preterite, perfect, translation in data:
+        metadata = {"labels": labels}
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO items (type, keyword, translation, solution_json, metadata_json)
+            VALUES ('verb', ?, ?, ?, ?)
+            """,
+            (
+                infinitive.lower(),
+                translation,
+                json.dumps([infinitive, third_person, preterite, perfect]),
+                json.dumps(metadata),
+            ),
+        )
+
+
+def prompt_username() -> str:
+    while True:
+        name = input("Kako ti je ime? ").strip()
+        if name:
+            return name
+        print("Vpiši vsaj eno črko.")
+
+
+def get_or_create_user(conn: sqlite3.Connection, name: str) -> int:
+    row = conn.execute("SELECT id FROM users WHERE name = ?", (name,)).fetchone()
+    if row:
+        return int(row[0])
+    cur = conn.execute(
+        "INSERT INTO users (name, created_at) VALUES (?, ?)",
+        (name, now_iso()),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def fetch_items_with_stats(
+    conn: sqlite3.Connection, user_id: int, word_type: str
+) -> List[Dict]:
+    rows = conn.execute(
+        """
+        SELECT
+            i.id,
+            i.translation,
+            i.solution_json,
+            i.metadata_json,
+            COALESCE(s.attempts, 0) AS attempts,
+            COALESCE(s.correct, 0) AS correct,
+            COALESCE(s.wrong, 0) AS wrong,
+            COALESCE(s.reveals, 0) AS reveals,
+            COALESCE(s.correct_streak, 0) AS streak,
+            s.last_seen AS last_seen
+        FROM items i
+        LEFT JOIN user_stats s
+            ON s.entry_id = i.id AND s.user_id = ?
+        WHERE i.type = ?
+        """,
+        (user_id, word_type),
+    ).fetchall()
+
+    items = []
+    for row in rows:
+        metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+        solutions = json.loads(row["solution_json"])
+        attempts = row["attempts"]
+        wrong = row["wrong"]
+        accuracy = 0.0
+        if attempts:
+            accuracy = (attempts - wrong) / attempts
+        item = {
+            "id": row["id"],
+            "translation": row["translation"],
+            "metadata": metadata,
+            "solutions": solutions,
+            "attempts": attempts,
+            "correct": row["correct"],
+            "wrong": wrong,
+            "reveals": row["reveals"],
+            "streak": row["streak"],
+            "last_seen": row["last_seen"],
+            "accuracy": accuracy,
+        }
+        item["difficulty"] = compute_difficulty(item)
+        items.append(item)
+    return items
+
+
+def compute_difficulty(item: Dict) -> float:
+    attempts = item["attempts"]
+    wrong = item["wrong"]
+    streak = item["streak"]
+    reveals = item["reveals"]
+    last_seen = item["last_seen"]
+
+    if attempts == 0:
+        return 5.0
+
+    accuracy = (attempts - wrong) / attempts if attempts else 0.0
+    diff = 1.0 + (1.0 - accuracy) * 4.0
+    diff -= min(streak, 6) * 0.25
+    diff += min(reveals, 5) * 0.15
+    if last_seen:
+        try:
+            seen = datetime.fromisoformat(last_seen)
+            delta_days = (datetime.now(timezone.utc) - seen).total_seconds() / 86400.0
+            diff += min(max(delta_days / 4.0, 0.0), 1.0)
+        except ValueError:
+            diff += 0.2
+    return max(diff, 0.1)
+
+
+def fetch_cycle_count(conn: sqlite3.Connection, user_id: int, word_type: str) -> int:
+    row = conn.execute(
+        "SELECT cycles FROM user_cycles WHERE user_id = ? AND word_type = ?",
+        (user_id, word_type),
+    ).fetchone()
+    return int(row["cycles"]) if row else 0
+
+
+def increment_cycle(conn: sqlite3.Connection, user_id: int, word_type: str) -> None:
+    current = fetch_cycle_count(conn, user_id, word_type)
+    if current == 0:
+        conn.execute(
+            """
+            INSERT INTO user_cycles (user_id, word_type, cycles, last_cycle_at)
+            VALUES (?, ?, 1, ?)
+            """,
+            (user_id, word_type, now_iso()),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE user_cycles
+            SET cycles = ?, last_cycle_at = ?
+            WHERE user_id = ? AND word_type = ?
+            """,
+            (current + 1, now_iso(), user_id, word_type),
+        )
+    conn.commit()
+
+
+def global_accuracy(conn: sqlite3.Connection, user_id: int, word_type: str) -> Tuple[int, float]:
+    row = conn.execute(
+        """
+        SELECT
+            COALESCE(SUM(s.attempts), 0) AS att,
+            COALESCE(SUM(s.correct), 0) AS corr
+        FROM user_stats s
+        JOIN items i ON i.id = s.entry_id
+        WHERE s.user_id = ? AND i.type = ?
+        """,
+        (user_id, word_type),
+    ).fetchone()
+    attempts = int(row["att"])
+    accuracy = (row["corr"] / attempts) if attempts else 0.0
+    return attempts, accuracy
+
+
+def choose_cycle_items(items: List[Dict], adaptive: bool) -> List[Dict]:
+    if not items:
+        return []
+
+    shuffled = items[:]
+    random.shuffle(shuffled)
+
+    if not adaptive:
+        return shuffled
+
+    hard_items = [
+        item
+        for item in shuffled
+        if item["attempts"] == 0
+        or item["accuracy"] < HIGH_ACCURACY_THRESHOLD
+        or item["streak"] < 3
+    ]
+    easy_items = [item for item in shuffled if item not in hard_items]
+
+    keep_easy = max(1, int(len(items) * EASY_REVIEW_FRACTION))
+    review_items = random.sample(easy_items, min(len(easy_items), keep_easy)) if easy_items else []
+
+    selection = hard_items + review_items
+    selection.sort(key=lambda i: i["difficulty"], reverse=True)
+    return selection
+
+
+def get_labels(word_type: str, metadata: Dict) -> List[str]:
+    stored = metadata.get("labels")
+    if stored:
+        return stored
+    if word_type == "verb":
+        return ["infinitiv", "3. oseba ednine", "preterit", "perfekt"]
+    return ["člen + samostalnik"]
+
+
+def ask_yes_no(prompt: str) -> bool:
+    while True:
+        answer = input(prompt).strip().lower()
+        if answer in {"da", "d", "y", "yes"}:
+            return True
+        if answer in {"ne", "n", "no"}:
+            return False
+        print("Odgovori z da/ne.")
+
+
+def show_solution(word_type: str, labels: Sequence[str], solutions: Sequence[str]) -> None:
+    print("Pravilen odgovor:")
+    for label, solution in zip(labels, solutions):
+        print(f"  - {label}: {solution}")
+
+
+def collect_answers(labels: Sequence[str]) -> Tuple[Optional[List[str]], bool, bool]:
+    answers: List[str] = []
+    revealed = False
+    aborted = False
+
+    for label in labels:
+        raw = input(f"  {label}: ").strip()
+        lowered = raw.lower()
+        if lowered in QUIT_COMMANDS:
+            aborted = True
+            break
+        if lowered in SHOW_COMMANDS:
+            revealed = True
+            break
+        if lowered in SKIP_COMMANDS or raw == "":
+            answers.append("")
+        else:
+            answers.append(raw)
+
+    return (answers if not aborted else None), revealed, aborted
+
+
+def check_answers(user_answers: Sequence[str], solutions: Sequence[str]) -> bool:
+    normalized_user = [normalize_text(value) for value in user_answers]
+    normalized_sol = [normalize_text(value) for value in solutions]
+    return normalized_user == normalized_sol
+
+
+def ask_question(item: Dict, word_type: str) -> Dict:
+    translation = item["translation"]
+    metadata = item["metadata"]
+    labels = get_labels(word_type, metadata)
+    solutions = item["solutions"]
+
+    print("\n----------------------------------------")
+    type_label = "SAMOSTALNIK" if word_type == "noun" else "NEPRAVILNI GLAGOL"
+    header_color = COLOR_NOUN if word_type == "noun" else COLOR_VERB
+    print(color_text(type_label, header_color))
+    meaning_line = f"Pomen v slovenščini: {translation}"
+    print(color_text(meaning_line, COLOR_TITLE))
+    print("Vpiši '?' če želiš takoj videti rešitev ali 'q' za izhod.")
+
+    answers, revealed, aborted = collect_answers(labels)
+    if aborted:
+        return {"quit": True}
+
+    if revealed or answers is None:
+        show_solution(word_type, labels, solutions)
+        return {"correct": False, "revealed": True, "answers": answers or []}
+
+    if len(answers) < len(solutions):
+        answers.extend([""] * (len(solutions) - len(answers)))
+
+    correct = check_answers(answers, solutions)
+    if correct:
+        print("✅ Pravilno!")
+        return {"correct": True, "revealed": False, "answers": answers}
+
+    print("❌ Ni bilo pravilno.")
+    if ask_yes_no("Želiš videti pravilen odgovor? (da/ne): "):
+        show_solution(word_type, labels, solutions)
+        return {"correct": False, "revealed": True, "answers": answers}
+
+    print("Poskusi si zapomniti pravilno obliko za naslednjič.")
+    return {"correct": False, "revealed": False, "answers": answers}
+
+
+def update_progress(
+    conn: sqlite3.Connection,
+    user_id: int,
+    item_id: int,
+    correct: bool,
+    revealed: bool,
+    answers: Sequence[str],
+    cycle_number: int,
+) -> None:
+    now = now_iso()
+    result_label = "correct" if correct else ("revealed" if revealed else "wrong")
+    correct_value = 1 if correct else 0
+    wrong_value = 0 if correct else 1
+    reveal_value = 1 if revealed else 0
+    conn.execute(
+        """
+        INSERT INTO user_stats (
+            user_id, entry_id, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+        )
+        VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, entry_id) DO UPDATE SET
+            attempts = user_stats.attempts + 1,
+            correct = user_stats.correct + excluded.correct,
+            wrong = user_stats.wrong + excluded.wrong,
+            reveals = user_stats.reveals + excluded.reveals,
+            correct_streak = CASE
+                WHEN excluded.last_result = 'correct' THEN user_stats.correct_streak + 1
+                ELSE 0
+            END,
+            last_result = excluded.last_result,
+            last_seen = excluded.last_seen
+        """,
+        (
+            user_id,
+            item_id,
+            correct_value,
+            wrong_value,
+            reveal_value,
+            1 if correct else 0,
+            result_label,
+            now,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO attempts (user_id, entry_id, asked_at, was_correct, was_revealed, answers_json, cycle_number)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            item_id,
+            now,
+            correct_value,
+            reveal_value,
+            json.dumps(list(answers)),
+            cycle_number,
+        ),
+    )
+    conn.commit()
+
+
+def session_loop(conn: sqlite3.Connection, user_id: int, word_type: str) -> None:
+    print_module_instructions(word_type)
+    while True:
+        cycle_index = fetch_cycle_count(conn, user_id, word_type) + 1
+        total_attempts, accuracy = global_accuracy(conn, user_id, word_type)
+        adaptive = (
+            cycle_index > ADAPTIVE_AFTER_CYCLES
+            or (total_attempts >= MIN_ATTEMPTS_FOR_ADAPTIVE and accuracy >= HIGH_ACCURACY_THRESHOLD)
+        )
+
+        items = fetch_items_with_stats(conn, user_id, word_type)
+        if not items:
+            print("Ni vnosov za ta sklop. Preveri CSV datoteke.")
+            return
+
+        cycle_items = choose_cycle_items(items, adaptive)
+        if not cycle_items:
+            print("Ni kartic, ki bi jih bilo treba vaditi. Vseeno preglejmo osnovni seznam.")
+            cycle_items = items
+
+        mode_note = "adaptivni natančni način" if adaptive else "naključni način"
+        print(f"\nZačenjamo cikel #{cycle_index} ({mode_note}). Skupno vprašanj: {len(cycle_items)}")
+
+        for idx, item in enumerate(cycle_items, start=1):
+            print(f"\nVprašanje {idx}/{len(cycle_items)}")
+            result = ask_question(item, word_type)
+            if result.get("quit"):
+                print("Prekinili smo sejo.")
+                return
+            update_progress(
+                conn,
+                user_id,
+                item["id"],
+                bool(result.get("correct")),
+                bool(result.get("revealed")),
+                result.get("answers") or [],
+                cycle_index,
+            )
+
+        increment_cycle(conn, user_id, word_type)
+        print("\nCikel zaključen! 🏁")
+        stats_line(conn, user_id, word_type)
+
+        if not ask_yes_no("Zaženemo še en cikel z istim sklopom? (da/ne): "):
+            break
+
+
+def stats_line(conn: sqlite3.Connection, user_id: int, word_type: str) -> None:
+    row = conn.execute(
+        """
+        SELECT
+            COALESCE(SUM(correct), 0) AS correct,
+            COALESCE(SUM(wrong), 0) AS wrong,
+            COALESCE(SUM(reveals), 0) AS reveals
+        FROM user_stats
+        JOIN items ON items.id = user_stats.entry_id
+        WHERE user_id = ? AND items.type = ?
+        """,
+        (user_id, word_type),
+    ).fetchone()
+    correct = row["correct"]
+    wrong = row["wrong"]
+    reveals = row["reveals"]
+    total = correct + wrong
+    accuracy = (correct / total) * 100 if total else 0.0
+    print(
+        f"Dosedanje razmerje: {correct} pravilnih, {wrong} napačnih, {reveals} pogledov rešitev "
+        f"({accuracy:.1f}% uspešnost)."
+    )
+
+
+def choose_module() -> Optional[str]:
+    print("\nKaj želiš vaditi?")
+    print("  1) Samostalniki")
+    print("  2) Nepravilni glagoli")
+    print("  q) Izhod")
+    answer = input("Izbira: ").strip().lower()
+    if answer == "1":
+        return "noun"
+    if answer == "2":
+        return "verb"
+    if answer in QUIT_COMMANDS:
+        return None
+    print("Neznana izbira, poskusi znova.")
+    return choose_module()
+
+
+def print_module_instructions(word_type: str) -> None:
+    print("\nNavodila:")
+    if word_type == "noun":
+        print("  - Napiši člen in samostalnik v isti vrstici (npr. 'der Nachwuchs').")
+    else:
+        print("  - Vnesi oblike v zaporedju: infinitiv, 3. oseba ednine, preterit, perfekt.")
+    print("  - Vnesi '?' če želiš takoj videti rešitev ali 'q' za izhod.")
+
+
+def main() -> None:
+    random.seed()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    ensure_schema(conn)
+    seed_items(conn)
+
+    print("Nemški trener (samostalniki + nepravilni glagoli)")
+    username = prompt_username()
+    user_id = get_or_create_user(conn, username)
+    print(f"Pozdravljen, {username}! Izberi kaj želiš utrjevati.")
+
+    try:
+        while True:
+            module = choose_module()
+            if module is None:
+                print("Nasvidenje!")
+                break
+            session_loop(conn, user_id, module)
+    except KeyboardInterrupt:
+        print("\nPrekinjeno. Nasvidenje!")
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()
