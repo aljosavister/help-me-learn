@@ -196,6 +196,11 @@ body {
   background: rgba(255, 255, 255, 0.18);
 }
 
+.btn.small {
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+}
+
 .btn.outline-btn {
   background: transparent;
   border: 1px solid rgba(255, 255, 255, 0.35);
@@ -459,6 +464,36 @@ body {
 .items-list .translation {
   font-size: 0.85rem;
   color: #a7b7d5;
+}
+
+.item-line {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.item-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.edit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.85rem;
+  color: #aeb6d8;
+}
+
+.edit-form input {
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  padding: 0.55rem 0.7rem;
+  font-size: 1rem;
 }
 
 .empty-state {

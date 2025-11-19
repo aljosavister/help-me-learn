@@ -52,8 +52,16 @@ function App() {
   const [moduleItemsType, setModuleItemsType] = useState(null)
   const [moduleItems, setModuleItems] = useState([])
   const [isLoadingItems, setIsLoadingItems] = useState(false)
+  const [editingItemId, setEditingItemId] = useState(null)
+  const [editValues, setEditValues] = useState({ translation: '', forms: [] })
+  const [itemActionLoading, setItemActionLoading] = useState(false)
   const nounInputRef = useRef(null)
   const verbInputRef = useRef(null)
+
+  const refreshModules = useCallback(async () => {
+    const moduleData = await apiFetch('/modules')
+    setModules(moduleData)
+  }, [])
 
   const currentQuestion = cycle ? cycle.items[currentIndex] : null
   const isLastQuestion = cycle ? currentIndex === cycle.items.length - 1 : false
@@ -156,6 +164,73 @@ function App() {
     uploadCsv(wordType, file)
   }
 
+  const cancelEditing = () => {
+    setEditingItemId(null)
+    setEditValues({ translation: '', forms: [] })
+  }
+
+  const startEditingItem = (item) => {
+    const requiredForms = moduleItemsType === 'noun' ? 1 : 4
+    const forms = item.solution && item.solution.length ? [...item.solution] : []
+    while (forms.length < requiredForms) {
+      forms.push('')
+    }
+    setEditingItemId(item.id)
+    setEditValues({
+      translation: item.translation || '',
+      forms,
+    })
+  }
+
+  const handleFormChange = (index, value) => {
+    setEditValues((prev) => {
+      const next = [...prev.forms]
+      next[index] = value
+      return { ...prev, forms: next }
+    })
+  }
+
+  const saveItemChanges = async (itemId) => {
+    setItemActionLoading(true)
+    setError('')
+    try {
+      const payload = {
+        translation: (editValues.translation || '').trim(),
+        solution: editValues.forms.map((value) => (value || '').trim()),
+      }
+      const updated = await apiFetch(`/items/${itemId}`, {
+        method: 'PUT',
+        body: payload,
+      })
+      setModuleItems((prev) =>
+        prev.map((item) => (item.id === itemId ? { ...item, ...updated } : item)),
+      )
+      cancelEditing()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setItemActionLoading(false)
+    }
+  }
+
+  const deleteItem = async (itemId) => {
+    if (!window.confirm('Izbrišem ta zapis?')) return
+    setItemActionLoading(true)
+    setError('')
+    try {
+      await apiFetch(`/items/${itemId}`, { method: 'DELETE' })
+      setModuleItems((prev) => prev.filter((item) => item.id !== itemId))
+      if (editingItemId === itemId) {
+        cancelEditing()
+      }
+      await refreshModules()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setItemActionLoading(false)
+    }
+  }
+
   const uploadCsv = async (wordType, file) => {
     setImportSummary(null)
     setError('')
@@ -172,8 +247,7 @@ function App() {
         fileName: file.name,
         wordType,
       })
-      const moduleData = await apiFetch('/modules')
-      setModules(moduleData)
+      await refreshModules()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -185,6 +259,7 @@ function App() {
     if (moduleItemsType === wordType) {
       setModuleItemsType(null)
       setModuleItems([])
+      cancelEditing()
       return
     }
     setIsLoadingItems(true)
@@ -193,6 +268,7 @@ function App() {
       const data = await apiFetch(`/items?word_type=${wordType}&include_solution=true`)
       setModuleItemsType(wordType)
       setModuleItems(data)
+      cancelEditing()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -619,6 +695,7 @@ function App() {
                 if (event.target.classList.contains('modal-backdrop')) {
                   setModuleItemsType(null)
                   setModuleItems([])
+                  cancelEditing()
                 }
               }}
             >
@@ -633,6 +710,7 @@ function App() {
                     onClick={() => {
                       setModuleItemsType(null)
                       setModuleItems([])
+                      cancelEditing()
                     }}
                   >
                     ×
@@ -645,14 +723,90 @@ function App() {
                     <p>Trenutno ni zapisov.</p>
                   ) : (
                     <ul className="items-list">
-                      {moduleItems.map((item) => (
-                        <li key={item.id}>
-                          <span className="term">
-                            {item.solution ? item.solution.join(' · ') : '–'}
-                          </span>
-                          <span className="translation">{item.translation}</span>
-                        </li>
-                      ))}
+                      {moduleItems.map((item) => {
+                        const isEditing = editingItemId === item.id
+                        const formLabels =
+                          moduleItemsType === 'noun'
+                            ? ['Člen + samostalnik']
+                            : ['Infinitiv', '3. oseba ednine', 'Preterit', 'Perfekt']
+                        return (
+                          <li key={item.id}>
+                            {isEditing ? (
+                              <div className="edit-form">
+                                <label>
+                                  <span>Prevod</span>
+                                  <input
+                                    type="text"
+                                    value={editValues.translation}
+                                    onChange={(event) =>
+                                      setEditValues((prev) => ({
+                                        ...prev,
+                                        translation: event.target.value,
+                                      }))
+                                    }
+                                  />
+                                </label>
+                                {formLabels.map((label, index) => (
+                                  <label key={label}>
+                                    <span>{label}</span>
+                                    <input
+                                      type="text"
+                                      value={editValues.forms[index] ?? ''}
+                                      onChange={(event) =>
+                                        handleFormChange(index, event.target.value)
+                                      }
+                                    />
+                                  </label>
+                                ))}
+                                <div className="item-actions">
+                                  <button
+                                    type="button"
+                                    className="btn primary small"
+                                    onClick={() => saveItemChanges(item.id)}
+                                    disabled={itemActionLoading}
+                                  >
+                                    Shrani
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn ghost small"
+                                    onClick={cancelEditing}
+                                    disabled={itemActionLoading}
+                                  >
+                                    Prekliči
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <div className="item-line">
+                                  <span className="term">
+                                    {item.solution ? item.solution.join(' · ') : '–'}
+                                  </span>
+                                  <span className="translation">{item.translation}</span>
+                                </div>
+                                <div className="item-actions">
+                                  <button
+                                    type="button"
+                                    className="btn secondary small"
+                                    onClick={() => startEditingItem(item)}
+                                  >
+                                    Uredi
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn warning small"
+                                    onClick={() => deleteItem(item.id)}
+                                    disabled={itemActionLoading}
+                                  >
+                                    Izbriši
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </li>
+                        )
+                      })}
                     </ul>
                   )}
                 </div>

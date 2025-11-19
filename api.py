@@ -40,6 +40,20 @@ def _connect_db() -> sqlite3.Connection:
     return conn
 
 
+def serialize_item_row(row: sqlite3.Row, include_solution: bool = False) -> ItemOut:
+    metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    labels = learn.get_labels(row["type"], metadata)
+    solution = json.loads(row["solution_json"]) if include_solution and row["solution_json"] else None
+    return ItemOut(
+        id=row["id"],
+        type=row["type"],
+        translation=row["translation"],
+        metadata=metadata,
+        labels=labels,
+        solution=solution,
+    )
+
+
 def _init_database() -> None:
     conn = _connect_db()
     conn.row_factory = sqlite3.Row
@@ -153,6 +167,11 @@ class ImportResult(BaseModel):
     added: int
     skipped: int
     errors: List[str]
+
+
+class ItemUpdate(BaseModel):
+    translation: str
+    solution: List[str]
 
 
 class DeleteUserRequest(BaseModel):
@@ -298,19 +317,7 @@ def browse_items(
     rows = conn.execute(query, tuple(params)).fetchall()
     items: List[ItemOut] = []
     for row in rows:
-        metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
-        labels = learn.get_labels(row["type"], metadata)
-        solutions = json.loads(row["solution_json"]) if include_solution else None
-        items.append(
-            ItemOut(
-                id=row["id"],
-                type=row["type"],
-                translation=row["translation"],
-                metadata=metadata,
-                labels=labels,
-                solution=solutions,
-            )
-        )
+        items.append(serialize_item_row(row, include_solution=include_solution))
     return items
 
 
@@ -326,17 +333,7 @@ def item_detail(
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Vnos ne obstaja.")
-    metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
-    labels = learn.get_labels(row["type"], metadata)
-    solution = json.loads(row["solution_json"]) if include_solution else None
-    return ItemOut(
-        id=row["id"],
-        type=row["type"],
-        translation=row["translation"],
-        metadata=metadata,
-        labels=labels,
-        solution=solution,
-    )
+    return serialize_item_row(row, include_solution=include_solution)
 
 
 @app.get("/users/{user_id}/stats", response_model=StatsOut)
@@ -392,6 +389,64 @@ async def import_csv_endpoint(
         text = raw.decode("latin-1")
     result = learn.import_csv_text(conn, word_type, text)
     return ImportResult(added=result["added"], skipped=result["skipped"], errors=result["errors"])
+
+
+@app.put("/items/{item_id}", response_model=ItemOut)
+def update_item(
+    item_id: int,
+    payload: ItemUpdate,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ItemOut:
+    row = conn.execute("SELECT id, type FROM items WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Vnos ne obstaja.")
+    word_type = row["type"]
+    translation = payload.translation.strip()
+    if not translation:
+        raise HTTPException(status_code=400, detail="Prevod ne sme biti prazen.")
+    solutions = [value.strip() for value in payload.solution]
+    try:
+        if word_type == "noun":
+            if len(solutions) != 1 or not solutions[0]:
+                raise HTTPException(status_code=400, detail="Samostalnik mora imeti zapis člena in besede.")
+            records, errors = learn.build_noun_records([[solutions[0], translation]])
+        else:
+            if len(solutions) != 4 or any(not value for value in solutions):
+                raise HTTPException(status_code=400, detail="Glagol mora imeti vse 4 oblike.")
+            records, errors = learn.build_verb_records([[solutions[0], solutions[1], solutions[2], solutions[3], translation]])
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+        keyword, new_translation, solution_json, metadata_json = records[0]
+        conn.execute(
+            """
+            UPDATE items
+            SET keyword=?, translation=?, solution_json=?, metadata_json=?
+            WHERE id=?
+            """,
+            (keyword, new_translation, solution_json, metadata_json, item_id),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Vnos z enakim ključem že obstaja.")
+    refreshed = conn.execute(
+        "SELECT id, type, translation, solution_json, metadata_json FROM items WHERE id = ?",
+        (item_id,),
+    ).fetchone()
+    return serialize_item_row(refreshed, include_solution=True)
+
+
+@app.delete("/items/{item_id}", status_code=204)
+def delete_item(
+    item_id: int,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    row = conn.execute("SELECT id FROM items WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Vnos ne obstaja.")
+    conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
+    conn.commit()
+    return Response(status_code=204)
+
 @app.delete("/users/{user_id}", status_code=204)
 def delete_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> Response:
     ensure_user(conn, user_id)
