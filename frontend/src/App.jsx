@@ -255,6 +255,15 @@ function App() {
     }
   }
 
+  const resetCycleState = () => {
+    setCycle(null)
+    setCurrentIndex(0)
+    setAnswers([])
+    setQuestionStage('idle')
+    setEvaluation(null)
+    setSolutionVisible(false)
+  }
+
   const toggleModuleItems = async (wordType) => {
     if (moduleItemsType === wordType) {
       setModuleItemsType(null)
@@ -390,17 +399,18 @@ function App() {
         },
       })
       await loadStats(selectedModule)
-      setCycle(null)
-      setCurrentIndex(0)
-      setAnswers([])
-      setEvaluation(null)
-      setQuestionStage('idle')
-      setSolutionVisible(false)
+      resetCycleState()
     } catch (err) {
       setError(err.message)
     } finally {
       setIsBusy(false)
     }
+  }
+
+  const cancelCycle = () => {
+    if (!cycle) return
+    if (!window.confirm('Prekinem trenutni cikel?')) return
+    resetCycleState()
   }
 
   const currentCycleInfo = useMemo(() => {
@@ -816,7 +826,21 @@ function App() {
         </div>
       </section>
 
-      <section>{renderQuestion()}</section>
+      {cycle && (
+        <div className="modal-backdrop question-backdrop">
+          <div className="modal question-modal">
+            <div className="modal-header">
+              <h3>
+                Cikel #{cycle.cycle_number} ({cycle.mode})
+              </h3>
+              <button type="button" className="close-modal" onClick={cancelCycle}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">{renderQuestion()}</div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

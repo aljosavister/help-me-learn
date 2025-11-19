@@ -417,6 +417,14 @@ body {
   gap: 1rem;
 }
 
+.modal.question-modal {
+  width: min(800px, 95vw);
+}
+
+.modal-backdrop.question-backdrop {
+  z-index: 998;
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
