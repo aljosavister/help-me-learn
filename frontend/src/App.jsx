@@ -455,6 +455,12 @@ function App() {
                     return copy
                   })
                 }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && questionStage === 'idle') {
+                    event.preventDefault()
+                    handleValidateAnswers()
+                  }
+                }}
                 disabled={questionStage !== 'idle'}
               />
             </label>
