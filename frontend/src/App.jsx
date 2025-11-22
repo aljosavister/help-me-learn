@@ -52,6 +52,7 @@ function App() {
   const [moduleItemsType, setModuleItemsType] = useState(null)
   const [moduleItems, setModuleItems] = useState([])
   const [isLoadingItems, setIsLoadingItems] = useState(false)
+  const [retryItem, setRetryItem] = useState(null)
   const [editingItemId, setEditingItemId] = useState(null)
   const [editValues, setEditValues] = useState({ translation: '', forms: [] })
   const [itemActionLoading, setItemActionLoading] = useState(false)
@@ -262,6 +263,7 @@ function App() {
     setQuestionStage('idle')
     setEvaluation(null)
     setSolutionVisible(false)
+    setRetryItem(null)
   }
 
   const toggleModuleItems = async (wordType) => {
@@ -349,6 +351,7 @@ function App() {
       correct: false,
       message: 'Pogledal si rešitev. Zapiše se kot pomoč.',
     })
+    setRetryItem(currentQuestion)
     await recordAttempt(true, answers)
     setQuestionStage('final')
   }
@@ -360,12 +363,14 @@ function App() {
       setEvaluation({ correct: true, message: 'Odlično! Odgovor je pravilen.' })
       await recordAttempt(false, answers)
       setQuestionStage('final')
+      setRetryItem(null)
     } else {
       setSolutionVisible(true)
       setEvaluation({
         correct: false,
         message: 'Odgovor ni pravilen. Prikazan je pravilen odgovor.',
       })
+      setRetryItem(currentQuestion)
       await recordAttempt(true, answers)
       setQuestionStage('final')
     }
@@ -373,10 +378,18 @@ function App() {
 
   const handleAdvance = async () => {
     if (!cycle) return
-    if (isLastQuestion) {
+    let items = cycle.items
+    if (retryItem) {
+      items = [...cycle.items]
+      items.splice(currentIndex + 1, 0, retryItem)
+      setCycle((prev) => (prev ? { ...prev, items } : prev))
+      setRetryItem(null)
+    }
+    const nextIndex = currentIndex + 1
+    if (nextIndex >= items.length) {
       await completeCycle()
     } else {
-      setCurrentIndex((prev) => prev + 1)
+      setCurrentIndex(nextIndex)
     }
   }
 
@@ -480,7 +493,7 @@ function App() {
                 onClick={handleValidateAnswers}
                 disabled={isBusy}
               >
-                Preveri odgovor
+                Preveri odgovor [Enter]
               </button>
               <button className="btn ghost" onClick={handleRevealNow} disabled={isBusy}>
                 Ne vem – pokaži odgovor
@@ -489,7 +502,7 @@ function App() {
           )}
           {questionStage === 'final' && (
             <button className="btn primary" onClick={handleAdvance} disabled={isBusy}>
-              {isLastQuestion ? 'Zaključi cikel' : 'Naslednje vprašanje'}
+              {isLastQuestion ? 'Zaključi cikel [Enter]' : 'Naslednje vprašanje [Enter]'}
             </button>
           )}
         </div>
