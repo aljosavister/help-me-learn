@@ -247,6 +247,12 @@ body {
   padding: 2rem;
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .question-meta {
@@ -414,7 +420,8 @@ body {
 
 .modal {
   width: min(600px, 90vw);
-  max-height: 85vh;
+  height: 90vh;
+  max-height: 95vh;
   border-radius: 1rem;
   background: rgba(8, 15, 30, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -426,7 +433,8 @@ body {
 
 .modal.question-modal {
   width: min(800px, 95vw);
-  max-height: 90vh;
+  height: 92vh;
+  max-height: 96vh;
 }
 
 .modal-backdrop.question-backdrop {
@@ -442,6 +450,7 @@ body {
 .modal-body {
   overflow-y: auto;
   flex: 1;
+  min-height: 0;
 }
 
 .close-modal {

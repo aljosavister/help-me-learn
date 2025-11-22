@@ -53,6 +53,7 @@ function App() {
   const [moduleItems, setModuleItems] = useState([])
   const [isLoadingItems, setIsLoadingItems] = useState(false)
   const [retryItem, setRetryItem] = useState(null)
+  const [awaitingAdvance, setAwaitingAdvance] = useState(false)
   const firstInputRef = useRef(null)
   const [editingItemId, setEditingItemId] = useState(null)
   const [editValues, setEditValues] = useState({ translation: '', forms: [] })
@@ -271,6 +272,7 @@ function App() {
     setEvaluation(null)
     setSolutionVisible(false)
     setRetryItem(null)
+    setAwaitingAdvance(false)
   }
 
   const toggleModuleItems = async (wordType) => {
@@ -361,6 +363,7 @@ function App() {
     setRetryItem(currentQuestion)
     await recordAttempt(true, answers)
     setQuestionStage('final')
+    setAwaitingAdvance(true)
   }
 
   const handleValidateAnswers = async () => {
@@ -370,6 +373,7 @@ function App() {
       setEvaluation({ correct: true, message: 'Odlično! Odgovor je pravilen.' })
       await recordAttempt(false, answers)
       setQuestionStage('final')
+      setAwaitingAdvance(true)
       setRetryItem(null)
     } else {
       setSolutionVisible(true)
@@ -380,11 +384,13 @@ function App() {
       setRetryItem(currentQuestion)
       await recordAttempt(true, answers)
       setQuestionStage('final')
+      setAwaitingAdvance(true)
     }
   }
 
   const handleAdvance = async () => {
     if (!cycle) return
+    setAwaitingAdvance(false)
     let items = cycle.items
     if (retryItem) {
       items = [...cycle.items]
@@ -397,6 +403,10 @@ function App() {
       await completeCycle()
     } else {
       setCurrentIndex(nextIndex)
+      setQuestionStage('idle')
+      setEvaluation(null)
+      setSolutionVisible(false)
+      setAnswers(emptyAnswers(items[nextIndex].labels))
     }
   }
 
@@ -483,9 +493,13 @@ function App() {
                   })
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' && questionStage === 'idle') {
+                  if (event.key === 'Enter') {
                     event.preventDefault()
-                    handleValidateAnswers()
+                    if (questionStage === 'idle') {
+                      handleValidateAnswers()
+                    } else if (questionStage === 'final' || awaitingAdvance) {
+                      handleAdvance()
+                    }
                   }
                 }}
                 disabled={questionStage !== 'idle'}
