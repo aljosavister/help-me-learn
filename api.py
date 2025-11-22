@@ -169,6 +169,12 @@ class ImportResult(BaseModel):
     errors: List[str]
 
 
+class ItemCreate(BaseModel):
+    type: WordType
+    translation: str
+    solution: List[str]
+
+
 class ItemUpdate(BaseModel):
     translation: str
     solution: List[str]
@@ -446,6 +452,42 @@ def delete_item(
     conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
     conn.commit()
     return Response(status_code=204)
+
+
+@app.post("/items", response_model=ItemOut, status_code=201)
+def create_item(payload: ItemCreate, conn: sqlite3.Connection = Depends(get_db)) -> ItemOut:
+    translation = payload.translation.strip()
+    if not translation:
+        raise HTTPException(status_code=400, detail="Prevod ne sme biti prazen.")
+    solutions = [value.strip() for value in payload.solution]
+    try:
+        if payload.type == "noun":
+            if len(solutions) != 1 or not solutions[0]:
+                raise HTTPException(status_code=400, detail="Samostalnik mora imeti zapis člena in besede.")
+            records, errors = learn.build_noun_records([[solutions[0], translation]])
+        else:
+            if len(solutions) != 4 or any(not value for value in solutions):
+                raise HTTPException(status_code=400, detail="Glagol mora imeti vse 4 oblike.")
+            records, errors = learn.build_verb_records([[solutions[0], solutions[1], solutions[2], solutions[3], translation]])
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+        keyword, new_translation, solution_json, metadata_json = records[0]
+        cur = conn.execute(
+            """
+            INSERT INTO items (type, keyword, translation, solution_json, metadata_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (payload.type, keyword, new_translation, solution_json, metadata_json),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Vnos z enakim ključem že obstaja.")
+    new_id = cur.lastrowid
+    row = conn.execute(
+        "SELECT id, type, translation, solution_json, metadata_json FROM items WHERE id = ?",
+        (new_id,),
+    ).fetchone()
+    return serialize_item_row(row, include_solution=True)
 
 @app.delete("/users/{user_id}", status_code=204)
 def delete_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> Response:

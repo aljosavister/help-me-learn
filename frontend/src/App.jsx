@@ -54,6 +54,7 @@ function App() {
   const [isLoadingItems, setIsLoadingItems] = useState(false)
   const [retryItem, setRetryItem] = useState(null)
   const [awaitingAdvance, setAwaitingAdvance] = useState(false)
+  const [newItem, setNewItem] = useState({ translation: '', forms: [] })
   const firstInputRef = useRef(null)
   const [editingItemId, setEditingItemId] = useState(null)
   const [editValues, setEditValues] = useState({ translation: '', forms: [] })
@@ -280,6 +281,7 @@ function App() {
       setModuleItemsType(null)
       setModuleItems([])
       cancelEditing()
+      setNewItem({ translation: '', forms: [] })
       return
     }
     setIsLoadingItems(true)
@@ -289,6 +291,10 @@ function App() {
       setModuleItemsType(wordType)
       setModuleItems(data)
       cancelEditing()
+      setNewItem({
+        translation: '',
+        forms: wordType === 'noun' ? [''] : ['', '', '', ''],
+      })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -435,6 +441,40 @@ function App() {
     if (!cycle) return
     if (!window.confirm('Prekinem trenutni cikel?')) return
     resetCycleState()
+  }
+
+  const handleNewFormChange = (index, value) => {
+    setNewItem((prev) => {
+      const copy = [...prev.forms]
+      copy[index] = value
+      return { ...prev, forms: copy }
+    })
+  }
+
+  const handleCreateItem = async () => {
+    if (!moduleItemsType) return
+    setItemActionLoading(true)
+    setError('')
+    try {
+      const created = await apiFetch('/items', {
+        method: 'POST',
+        body: {
+          type: moduleItemsType,
+          translation: newItem.translation,
+          solution: newItem.forms,
+        },
+      })
+      setModuleItems((prev) => [created, ...prev])
+      await refreshModules()
+      setNewItem({
+        translation: '',
+        forms: moduleItemsType === 'noun' ? [''] : ['', '', '', ''],
+      })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setItemActionLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -766,99 +806,145 @@ function App() {
                   </button>
                 </div>
                 <div className="modal-body">
-                  {isLoadingItems ? (
-                    <p>Nalaganje ...</p>
-                  ) : moduleItems.length === 0 ? (
-                    <p>Trenutno ni zapisov.</p>
-                  ) : (
-                    <ul className="items-list">
-                      {moduleItems.map((item) => {
-                        const isEditing = editingItemId === item.id
-                        const formLabels =
-                          moduleItemsType === 'noun'
-                            ? ['Člen + samostalnik']
-                            : ['Infinitiv', '3. oseba ednine', 'Preterit', 'Perfekt']
-                        return (
-                          <li key={item.id}>
-                            {isEditing ? (
-                              <div className="edit-form">
-                                <label>
-                                  <span>Prevod</span>
+                <div className="create-form">
+                  <h4>Dodaj nov vnos</h4>
+                  <label>
+                    <span>Prevod</span>
+                    <input
+                      type="text"
+                      value={newItem.translation}
+                      onChange={(event) =>
+                        setNewItem((prev) => ({ ...prev, translation: event.target.value }))
+                      }
+                    />
+                  </label>
+                  {moduleItemsType === 'noun'
+                    ? ['Člen + samostalnik'].map((label, index) => (
+                        <label key={label}>
+                          <span>{label}</span>
+                          <input
+                            type="text"
+                            value={newItem.forms[index] ?? ''}
+                            onChange={(event) => handleNewFormChange(index, event.target.value)}
+                          />
+                        </label>
+                      ))
+                    : ['Infinitiv', '3. oseba ednine', 'Preterit', 'Perfekt'].map(
+                        (label, index) => (
+                          <label key={label}>
+                            <span>{label}</span>
+                            <input
+                              type="text"
+                              value={newItem.forms[index] ?? ''}
+                              onChange={(event) => handleNewFormChange(index, event.target.value)}
+                            />
+                          </label>
+                        ),
+                      )}
+                  <div className="item-actions">
+                    <button
+                      type="button"
+                      className="btn primary small"
+                      onClick={handleCreateItem}
+                      disabled={itemActionLoading || !moduleItemsType}
+                    >
+                      Dodaj
+                    </button>
+                  </div>
+                </div>
+                {isLoadingItems ? (
+                  <p>Nalaganje ...</p>
+                ) : moduleItems.length === 0 ? (
+                  <p>Trenutno ni zapisov.</p>
+                ) : (
+                  <ul className="items-list">
+                    {moduleItems.map((item) => {
+                      const isEditing = editingItemId === item.id
+                      const formLabels =
+                        moduleItemsType === 'noun'
+                          ? ['Člen + samostalnik']
+                          : ['Infinitiv', '3. oseba ednine', 'Preterit', 'Perfekt']
+                      return (
+                        <li key={item.id}>
+                          {isEditing ? (
+                            <div className="edit-form">
+                              <label>
+                                <span>Prevod</span>
+                                <input
+                                  type="text"
+                                  value={editValues.translation}
+                                  onChange={(event) =>
+                                    setEditValues((prev) => ({
+                                      ...prev,
+                                      translation: event.target.value,
+                                    }))
+                                  }
+                                />
+                              </label>
+                              {formLabels.map((label, index) => (
+                                <label key={label}>
+                                  <span>{label}</span>
                                   <input
                                     type="text"
-                                    value={editValues.translation}
+                                    value={editValues.forms[index] ?? ''}
                                     onChange={(event) =>
-                                      setEditValues((prev) => ({
-                                        ...prev,
-                                        translation: event.target.value,
-                                      }))
+                                      handleFormChange(index, event.target.value)
                                     }
                                   />
                                 </label>
-                                {formLabels.map((label, index) => (
-                                  <label key={label}>
-                                    <span>{label}</span>
-                                    <input
-                                      type="text"
-                                      value={editValues.forms[index] ?? ''}
-                                      onChange={(event) =>
-                                        handleFormChange(index, event.target.value)
-                                      }
-                                    />
-                                  </label>
-                                ))}
-                                <div className="item-actions">
-                                  <button
-                                    type="button"
-                                    className="btn primary small"
-                                    onClick={() => saveItemChanges(item.id)}
-                                    disabled={itemActionLoading}
-                                  >
-                                    Shrani
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn ghost small"
-                                    onClick={cancelEditing}
-                                    disabled={itemActionLoading}
-                                  >
-                                    Prekliči
-                                  </button>
-                                </div>
+                              ))}
+                              <div className="item-actions">
+                                <button
+                                  type="button"
+                                  className="btn primary small"
+                                  onClick={() => saveItemChanges(item.id)}
+                                  disabled={itemActionLoading}
+                                >
+                                  Shrani
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn ghost small"
+                                  onClick={cancelEditing}
+                                  disabled={itemActionLoading}
+                                >
+                                  Prekliči
+                                </button>
                               </div>
-                            ) : (
-                              <>
-                                <div className="item-line">
-                                  <span className="term">
-                                    {item.solution ? item.solution.join(' · ') : '–'}
-                                  </span>
-                                  <span className="translation">{item.translation}</span>
-                                </div>
-                                <div className="item-actions">
-                                  <button
-                                    type="button"
-                                    className="btn secondary small"
-                                    onClick={() => startEditingItem(item)}
-                                  >
-                                    Uredi
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn warning small"
-                                    onClick={() => deleteItem(item.id)}
-                                    disabled={itemActionLoading}
-                                  >
-                                    Izbriši
-                                  </button>
-                                </div>
-                              </>
-                            )}
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  )}
-                </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="item-line">
+                                <span className="term">
+                                  {item.solution ? item.solution.join(' · ') : '–'}
+                                </span>
+                                <span className="translation">{item.translation}</span>
+                              </div>
+                              <div className="item-actions">
+                                <button
+                                  type="button"
+                                  className="btn secondary small"
+                                  onClick={() => startEditingItem(item)}
+                                >
+                                  Uredi
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn warning small"
+                                  onClick={() => deleteItem(item.id)}
+                                  disabled={itemActionLoading}
+                                >
+                                  Izbriši
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
               </div>
             </div>
           )}

@@ -521,6 +521,19 @@ body {
   font-size: 1rem;
 }
 
+.create-form {
+  padding: 0.8rem;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 0.8rem;
+  margin-bottom: 1rem;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.create-form h4 {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+}
+
 .empty-state {
   text-align: center;
   padding: 2rem;
