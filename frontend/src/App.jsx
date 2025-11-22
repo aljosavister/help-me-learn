@@ -508,11 +508,6 @@ function App() {
               </button>
             </>
           )}
-          {questionStage === 'final' && (
-            <button className="btn primary" onClick={handleAdvance} disabled={isBusy}>
-              {isLastQuestion ? 'Zaključi cikel [Enter]' : 'Naslednje vprašanje [Enter]'}
-            </button>
-          )}
         </div>
         {evaluation && (
           <div className={`status ${evaluation.correct ? 'success' : 'danger'}`}>
@@ -534,6 +529,13 @@ function App() {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+        {questionStage === 'final' && (
+          <div className="actions">
+            <button className="btn primary" onClick={handleAdvance} disabled={isBusy}>
+              {isLastQuestion ? 'Zaključi cikel [Enter]' : 'Naslednje vprašanje [Enter]'}
+            </button>
           </div>
         )}
       </div>
