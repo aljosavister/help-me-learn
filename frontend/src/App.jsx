@@ -53,6 +53,7 @@ function App() {
   const [moduleItems, setModuleItems] = useState([])
   const [isLoadingItems, setIsLoadingItems] = useState(false)
   const [retryItem, setRetryItem] = useState(null)
+  const firstInputRef = useRef(null)
   const [editingItemId, setEditingItemId] = useState(null)
   const [editValues, setEditValues] = useState({ translation: '', forms: [] })
   const [itemActionLoading, setItemActionLoading] = useState(false)
@@ -104,6 +105,12 @@ function App() {
       setError('')
     }
   }, [currentQuestion])
+
+  useEffect(() => {
+    if (questionStage === 'idle' && firstInputRef.current) {
+      firstInputRef.current.focus()
+    }
+  }, [questionStage, currentQuestion])
 
   const loadStats = async (wordType) => {
     if (!selectedUser) return
@@ -465,6 +472,7 @@ function App() {
               <span>{label}</span>
               <input
                 type="text"
+                ref={index === 0 ? firstInputRef : null}
                 value={answers[index] ?? ''}
                 onChange={(event) => {
                   const value = event.target.value
