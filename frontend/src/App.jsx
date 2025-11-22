@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
+const ADAPTIVE_AFTER_CYCLES = 5
+const MIN_ATTEMPTS_FOR_ADAPTIVE = 25
+const HIGH_ACCURACY_THRESHOLD = 0.88
 
 const normalizeText = (text) =>
   text.trim().toLowerCase().replace(/ß/g, 'ss').replace(/\s+/g, ' ')
@@ -59,6 +62,8 @@ function App() {
   const [resultsItems, setResultsItems] = useState([])
   const [loadingResults, setLoadingResults] = useState(false)
   const [resultsWordType, setResultsWordType] = useState(null)
+  const [listFilter, setListFilter] = useState('')
+  const [resultsFilter, setResultsFilter] = useState('')
   const firstInputRef = useRef(null)
   const [editingItemId, setEditingItemId] = useState(null)
   const [editValues, setEditValues] = useState({ translation: '', forms: [] })
@@ -299,6 +304,7 @@ function App() {
         translation: '',
         forms: wordType === 'noun' ? [''] : ['', '', '', ''],
       })
+      setListFilter('')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -501,11 +507,29 @@ function App() {
         return bAttempts - aAttempts // več poskusov najprej
       })
       setResultsItems(sorted)
+      setResultsFilter('')
     } catch (err) {
       setError(err.message)
     } finally {
       setLoadingResults(false)
     }
+  }
+
+  const nextCycleModeLabel = () => {
+    if (!stats) return ''
+    const cycleIndex = (stats.cycle_count || 0) + 1
+    const attempts = stats.attempts || 0
+    const accuracy = attempts ? (stats.correct || 0) / attempts : 0
+    const adaptive =
+      cycleIndex > ADAPTIVE_AFTER_CYCLES ||
+      (attempts >= MIN_ATTEMPTS_FOR_ADAPTIVE && accuracy >= HIGH_ACCURACY_THRESHOLD)
+    return adaptive ? 'Naslednji cikel: adaptivni način' : 'Naslednji cikel: naključni način'
+  }
+
+  const nextCycleModeExplanation = () => {
+    return `Adaptivni način se vklopi po ${ADAPTIVE_AFTER_CYCLES}+ ciklih ali pri vsaj ${MIN_ATTEMPTS_FOR_ADAPTIVE} poskusih in uspešnosti ≥ ${Math.round(
+      HIGH_ACCURACY_THRESHOLD * 100,
+    )}%.`
   }
 
   useEffect(() => {
@@ -743,7 +767,7 @@ function App() {
                   onClick={() => openResultsModal(module.type)}
                   disabled={!selectedUser}
                 >
-                  Pokaži rezultate
+                  Rezultati
                 </button>
               </div>
             ))}
@@ -813,6 +837,11 @@ function App() {
                 <li>
                   Zaključeni cikli: <strong>{stats.cycle_count}</strong>
                 </li>
+                <li>
+                  {nextCycleModeLabel()}
+                  <br />
+                  <span className="hint">{nextCycleModeExplanation()}</span>
+                </li>
               </ul>
             </div>
           )}
@@ -847,6 +876,12 @@ function App() {
                 <div className="modal-body">
                 <div className="create-form">
                   <h4>Dodaj nov vnos</h4>
+                  <input
+                    type="text"
+                    placeholder="Filter po geslih/prevodih"
+                    value={listFilter}
+                    onChange={(e) => setListFilter(e.target.value)}
+                  />
                   <label>
                     <span>Prevod</span>
                     <input
@@ -897,14 +932,26 @@ function App() {
                   <p>Trenutno ni zapisov.</p>
                 ) : (
                   <ul className="items-list">
-                    {moduleItems.map((item) => {
-                      const isEditing = editingItemId === item.id
-                      const formLabels =
-                        moduleItemsType === 'noun'
-                          ? ['Člen + samostalnik']
-                          : ['Infinitiv', '3. oseba ednine', 'Preterit', 'Perfekt']
-                      return (
-                        <li key={item.id}>
+                    {moduleItems
+                      .filter((item) => {
+                        if (!listFilter.trim()) return true
+                        const q = listFilter.toLowerCase()
+                        const haystack = [
+                          item.translation || '',
+                          ...(item.solution || []),
+                        ]
+                          .join(' ')
+                          .toLowerCase()
+                        return haystack.includes(q)
+                      })
+                      .map((item) => {
+                        const isEditing = editingItemId === item.id
+                        const formLabels =
+                          moduleItemsType === 'noun'
+                            ? ['Člen + samostalnik']
+                            : ['Infinitiv', '3. oseba ednine', 'Preterit', 'Perfekt']
+                        return (
+                          <li key={item.id}>
                           {isEditing ? (
                             <div className="edit-form">
                               <label>
@@ -1017,28 +1064,47 @@ function App() {
               </button>
             </div>
             <div className="modal-body">
+              <input
+                type="text"
+                placeholder="Filter po geslih/prevodih"
+                value={resultsFilter}
+                onChange={(e) => setResultsFilter(e.target.value)}
+                className="filter-input"
+              />
               {loadingResults ? (
                 <p>Nalaganje ...</p>
               ) : resultsItems.length === 0 ? (
                 <p>Ni podatkov.</p>
               ) : (
                 <ul className="items-list">
-                  {resultsItems.map((item) => (
-                    <li key={item.id}>
-                      <div className="item-line">
-                        <span className="term">
-                          {item.solution ? item.solution.join(' · ') : '–'}
-                        </span>
-                        <span className="translation">{item.translation}</span>
-                      </div>
-                      <div className="item-stats">
-                        <span>Poskusi: {item.attempts ?? 0}</span>
-                        <span>Pravilni: {item.correct ?? 0}</span>
-                        <span>Napačni: {item.wrong ?? 0}</span>
-                        <span>Pogledi: {item.reveals ?? 0}</span>
-                      </div>
-                    </li>
-                  ))}
+                  {resultsItems
+                    .filter((item) => {
+                      if (!resultsFilter.trim()) return true
+                      const q = resultsFilter.toLowerCase()
+                      const haystack = [
+                        item.translation || '',
+                        ...(item.solution || []),
+                      ]
+                        .join(' ')
+                        .toLowerCase()
+                      return haystack.includes(q)
+                    })
+                    .map((item) => (
+                      <li key={item.id}>
+                        <div className="item-line">
+                          <span className="term">
+                            {item.solution ? item.solution.join(' · ') : '–'}
+                          </span>
+                          <span className="translation">{item.translation}</span>
+                        </div>
+                        <div className="item-stats">
+                          <span>Poskusi: {item.attempts ?? 0}</span>
+                          <span>Pravilni: {item.correct ?? 0}</span>
+                          <span>Napačni: {item.wrong ?? 0}</span>
+                          <span>Pogledi: {item.reveals ?? 0}</span>
+                        </div>
+                      </li>
+                    ))}
                 </ul>
               )}
             </div>

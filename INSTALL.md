@@ -81,6 +81,16 @@ sudo systemctl restart german-backend.service
 sudo systemctl restart german-frontend.service
 ```
 
+## 6. Nastavitve adaptivnega načina (frontend)
+
+Privzete konstante (definirane v `frontend/src/App.jsx`):
+
+- `ADAPTIVE_AFTER_CYCLES = 5` — po toliko ciklih se lahko vklopi adaptivni način.
+- `MIN_ATTEMPTS_FOR_ADAPTIVE = 25` — minimalno število poskusov pred adaptivnim načinom.
+- `HIGH_ACCURACY_THRESHOLD = 0.88` — prag uspešnosti (88%) za preklop.
+
+Kdaj se vklopi adaptivni način: če je trenutni cikel > `ADAPTIVE_AFTER_CYCLES` **ali** če ima uporabnik vsaj `MIN_ATTEMPTS_FOR_ADAPTIVE` poskusov in uspešnost ≥ `HIGH_ACCURACY_THRESHOLD`. Za spremembo vedenja prilagodite te tri vrednosti in ponovno zgradite frontend (`npm run build`).
+
 ## 6. Ročni razvoj / testiranje
 
 - `start.sh` in `stop.sh` (v korenu repoja) omogočata lokalni zagon backend + frontend dev strežnikov.
