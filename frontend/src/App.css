@@ -368,6 +368,13 @@ body {
   font-size: 1rem;
 }
 
+.solution-highlight {
+  border: 1px solid rgba(82, 196, 26, 0.6);
+  border-radius: 0.8rem;
+  padding: 1rem;
+  background: rgba(82, 196, 26, 0.12);
+}
+
 .alert {
   padding: 0.8rem 1rem;
   border-radius: 0.8rem;

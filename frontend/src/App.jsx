@@ -375,7 +375,7 @@ function App() {
       setSolutionVisible(true)
       setEvaluation({
         correct: false,
-        message: 'Odgovor ni pravilen. Prikazan je pravilen odgovor.',
+        message: 'Odgovor ni pravilen.',
       })
       setRetryItem(currentQuestion)
       await recordAttempt(true, answers)
@@ -520,7 +520,11 @@ function App() {
           </div>
         )}
         {solutionVisible && currentQuestion.solution && (
-          <div className="solution-panel">
+          <div
+            className={`solution-panel ${
+              evaluation && !evaluation.correct ? 'solution-highlight' : ''
+            }`}
+          >
             <h4>Pravilne oblike</h4>
             <ul>
               {currentQuestion.solution.map((value, index) => (
