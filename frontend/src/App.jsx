@@ -1053,8 +1053,15 @@ function App() {
         </div>
       )}
       {showResultsModal && (
-        <div className="modal-backdrop" onClick={() => setShowResultsModal(false)}>
-          <div className="modal">
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target.classList.contains('modal-backdrop')) {
+              setShowResultsModal(false)
+            }
+          }}
+        >
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <h3>
                 Rezultati ({resultsWordType === 'noun' ? 'Samostalniki' : 'Nepravilni glagoli'})
