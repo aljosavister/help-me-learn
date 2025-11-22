@@ -503,6 +503,14 @@ body {
   flex-wrap: wrap;
 }
 
+.item-stats {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  color: #c4cee8;
+}
+
 .edit-form label {
   display: flex;
   flex-direction: column;

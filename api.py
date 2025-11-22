@@ -51,6 +51,11 @@ def serialize_item_row(row: sqlite3.Row, include_solution: bool = False) -> Item
         metadata=metadata,
         labels=labels,
         solution=solution,
+        attempts=row["attempts"] if "attempts" in row.keys() else None,
+        correct=row["correct"] if "correct" in row.keys() else None,
+        wrong=row["wrong"] if "wrong" in row.keys() else None,
+        reveals=row["reveals"] if "reveals" in row.keys() else None,
+        streak=row["streak"] if "streak" in row.keys() else None,
     )
 
 
@@ -150,6 +155,11 @@ class ItemOut(BaseModel):
     metadata: Dict
     labels: List[str]
     solution: Optional[List[str]] = None
+    attempts: Optional[int] = None
+    correct: Optional[int] = None
+    wrong: Optional[int] = None
+    reveals: Optional[int] = None
+    streak: Optional[int] = None
 
 
 class StatsOut(BaseModel):
@@ -312,14 +322,30 @@ def submit_attempt(payload: AttemptRequest, conn: sqlite3.Connection = Depends(g
 def browse_items(
     word_type: Optional[WordType] = Query(default=None),
     include_solution: bool = Query(default=False),
+    user_id: Optional[int] = Query(default=None),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> List[ItemOut]:
-    query = "SELECT id, type, translation, solution_json, metadata_json FROM items"
-    params: List = []
+    query = """
+    SELECT
+        items.id,
+        items.type,
+        items.translation,
+        items.solution_json,
+        items.metadata_json,
+        COALESCE(us.attempts, 0) AS attempts,
+        COALESCE(us.correct, 0) AS correct,
+        COALESCE(us.wrong, 0) AS wrong,
+        COALESCE(us.reveals, 0) AS reveals,
+        COALESCE(us.correct_streak, 0) AS streak
+    FROM items
+    LEFT JOIN user_stats us
+      ON us.entry_id = items.id AND us.user_id = ?
+    """
+    params: List = [user_id]  # if user_id is None, this will produce NULL and COALESCE => 0
     if word_type:
-        query += " WHERE type = ?"
+        query += " WHERE items.type = ?"
         params.append(word_type)
-    query += " ORDER BY id"
+    query += " ORDER BY items.id"
     rows = conn.execute(query, tuple(params)).fetchall()
     items: List[ItemOut] = []
     for row in rows:

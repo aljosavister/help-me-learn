@@ -55,6 +55,10 @@ function App() {
   const [retryItem, setRetryItem] = useState(null)
   const [awaitingAdvance, setAwaitingAdvance] = useState(false)
   const [newItem, setNewItem] = useState({ translation: '', forms: [] })
+  const [showResultsModal, setShowResultsModal] = useState(false)
+  const [resultsItems, setResultsItems] = useState([])
+  const [loadingResults, setLoadingResults] = useState(false)
+  const [resultsWordType, setResultsWordType] = useState(null)
   const firstInputRef = useRef(null)
   const [editingItemId, setEditingItemId] = useState(null)
   const [editValues, setEditValues] = useState({ translation: '', forms: [] })
@@ -477,6 +481,33 @@ function App() {
     }
   }
 
+  const openResultsModal = async (wordType) => {
+    if (!selectedUser) return
+    setShowResultsModal(true)
+    setResultsWordType(wordType)
+    setLoadingResults(true)
+    setResultsItems([])
+    setError('')
+    try {
+      const data = await apiFetch(
+        `/items?word_type=${wordType}&include_solution=true&user_id=${selectedUser.id}`,
+      )
+      const sorted = [...data].sort((a, b) => {
+        const aAttempts = a.attempts || 0
+        const bAttempts = b.attempts || 0
+        const aAccuracy = aAttempts ? (a.correct || 0) / aAttempts : 1
+        const bAccuracy = bAttempts ? (b.correct || 0) / bAttempts : 1
+        if (aAccuracy !== bAccuracy) return aAccuracy - bAccuracy // nižje najprej
+        return bAttempts - aAttempts // več poskusov najprej
+      })
+      setResultsItems(sorted)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoadingResults(false)
+    }
+  }
+
   useEffect(() => {
     const onKey = (event) => {
       if (event.key !== 'Enter') return
@@ -704,7 +735,15 @@ function App() {
                   onClick={() => toggleModuleItems(module.type)}
                   disabled={isLoadingItems}
                 >
-                  Pokaži seznam
+                  Uredi seznam
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => openResultsModal(module.type)}
+                  disabled={!selectedUser}
+                >
+                  Pokaži rezultate
                 </button>
               </div>
             ))}
@@ -963,6 +1002,46 @@ function App() {
               </button>
             </div>
             <div className="modal-body">{renderQuestion()}</div>
+          </div>
+        </div>
+      )}
+      {showResultsModal && (
+        <div className="modal-backdrop" onClick={() => setShowResultsModal(false)}>
+          <div className="modal">
+            <div className="modal-header">
+              <h3>
+                Rezultati ({resultsWordType === 'noun' ? 'Samostalniki' : 'Nepravilni glagoli'})
+              </h3>
+              <button type="button" className="close-modal" onClick={() => setShowResultsModal(false)}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              {loadingResults ? (
+                <p>Nalaganje ...</p>
+              ) : resultsItems.length === 0 ? (
+                <p>Ni podatkov.</p>
+              ) : (
+                <ul className="items-list">
+                  {resultsItems.map((item) => (
+                    <li key={item.id}>
+                      <div className="item-line">
+                        <span className="term">
+                          {item.solution ? item.solution.join(' · ') : '–'}
+                        </span>
+                        <span className="translation">{item.translation}</span>
+                      </div>
+                      <div className="item-stats">
+                        <span>Poskusi: {item.attempts ?? 0}</span>
+                        <span>Pravilni: {item.correct ?? 0}</span>
+                        <span>Napačni: {item.wrong ?? 0}</span>
+                        <span>Pogledi: {item.reveals ?? 0}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
       )}
