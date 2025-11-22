@@ -534,6 +534,23 @@ body {
   font-size: 1rem;
 }
 
+.create-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.95rem;
+}
+
+.create-form input {
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  padding: 0.55rem 0.7rem;
+  font-size: 1rem;
+}
+
 .empty-state {
   text-align: center;
   padding: 2rem;
