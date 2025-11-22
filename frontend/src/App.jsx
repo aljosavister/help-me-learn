@@ -361,20 +361,14 @@ function App() {
       await recordAttempt(false, answers)
       setQuestionStage('final')
     } else {
+      setSolutionVisible(true)
       setEvaluation({
         correct: false,
-        message: 'Odgovor ni pravilen. Lahko pogledaš rešitev ali nadaljuješ.',
+        message: 'Odgovor ni pravilen. Prikazan je pravilen odgovor.',
       })
-      setQuestionStage('answered-wrong')
+      await recordAttempt(true, answers)
+      setQuestionStage('final')
     }
-  }
-
-  const finalizeWrong = async (showSolution) => {
-    if (showSolution) {
-      setSolutionVisible(true)
-    }
-    await recordAttempt(showSolution, answers)
-    setQuestionStage('final')
   }
 
   const handleAdvance = async () => {
@@ -412,6 +406,18 @@ function App() {
     if (!window.confirm('Prekinem trenutni cikel?')) return
     resetCycleState()
   }
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key !== 'Enter') return
+      if (questionStage === 'final' && cycle) {
+        event.preventDefault()
+        handleAdvance()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [questionStage, cycle, handleAdvance])
 
   const currentCycleInfo = useMemo(() => {
     if (!cycle) return null
@@ -478,20 +484,6 @@ function App() {
               </button>
               <button className="btn ghost" onClick={handleRevealNow} disabled={isBusy}>
                 Ne vem – pokaži odgovor
-              </button>
-            </>
-          )}
-          {questionStage === 'answered-wrong' && (
-            <>
-              <button className="btn" onClick={() => finalizeWrong(false)} disabled={isBusy}>
-                Naprej brez rešitve
-              </button>
-              <button
-                className="btn warning"
-                onClick={() => finalizeWrong(true)}
-                disabled={isBusy}
-              >
-                Pokaži rešitev
               </button>
             </>
           )}
