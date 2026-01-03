@@ -141,9 +141,11 @@ function App() {
     try {
       const data = await apiFetch(`/users/${selectedUser.id}/stats?word_type=${wordType}`)
       setStats(data)
+      return data
     } catch (err) {
       setError(err.message)
     }
+    return null
   }
 
   const handleCreateUser = async (event) => {
@@ -608,6 +610,78 @@ function App() {
     if (!cycle) return null
     return `Cikel #${cycle.cycle_number} (${cycle.mode})`
   }, [cycle])
+
+  const filteredResultsItems = useMemo(() => {
+    if (!resultsFilter.trim()) return resultsItems
+    const q = resultsFilter.toLowerCase()
+    return resultsItems.filter((item) => {
+      const haystack = [item.translation || '', ...(item.solution || [])]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(q)
+    })
+  }, [resultsItems, resultsFilter])
+
+  const hasWrongResults = useMemo(
+    () => filteredResultsItems.some((item) => (item.wrong || 0) > 0),
+    [filteredResultsItems],
+  )
+
+  const startReviewCycle = async () => {
+    if (!selectedUser || !resultsWordType) return
+    setError('')
+    const wrongItems = filteredResultsItems.filter((item) => (item.wrong || 0) > 0)
+    if (wrongItems.length === 0) {
+      setError('Ni napačnih odgovorov za ponovitev.')
+      return
+    }
+    let limit = null
+    if (resultsWordType === 'number') {
+      const sizeParsed = Number(numberCycleSize)
+      if (!Number.isInteger(sizeParsed) || sizeParsed < 1) {
+        setError('Velikost cikla mora biti celo število ≥ 1.')
+        return
+      }
+      limit = sizeParsed
+    }
+    const sorted = [...wrongItems].sort((a, b) => {
+      const aAttempts = a.attempts || 0
+      const bAttempts = b.attempts || 0
+      const aAccuracy = aAttempts ? (a.correct || 0) / aAttempts : 1
+      const bAccuracy = bAttempts ? (b.correct || 0) / bAttempts : 1
+      if (aAccuracy !== bAccuracy) return aAccuracy - bAccuracy
+      return bAttempts - aAttempts
+    })
+    const selection = limit ? sorted.slice(0, limit) : sorted
+    const statsData = await loadStats(resultsWordType)
+    const cycleIndex = (statsData?.cycle_count || 0) + 1
+    const items = selection.map((item) => ({
+      id: item.id,
+      translation: item.translation,
+      labels: item.labels || (resultsWordType === 'number' ? ['Zapis po nemško'] : []),
+      attempts: item.attempts ?? 0,
+      accuracy: item.attempts ? (item.correct || 0) / item.attempts : 0,
+      streak: item.streak ?? 0,
+      difficulty: 0,
+      solution: item.solution || [],
+    }))
+    setSelectedModule(resultsWordType)
+    setCycle({
+      cycle_number: cycleIndex,
+      adaptive: false,
+      mode: 'ponovitev napačnih',
+      total_items: items.length,
+      items,
+    })
+    setCurrentIndex(0)
+    setAnswers(emptyAnswers(items[0]?.labels))
+    setQuestionStage('idle')
+    setEvaluation(null)
+    setSolutionVisible(false)
+    setRetryItem(null)
+    setAwaitingAdvance(false)
+    setShowResultsModal(false)
+  }
 
   const renderQuestion = () => {
     if (!currentQuestion) {
@@ -1207,51 +1281,49 @@ function App() {
                 onChange={(e) => setResultsFilter(e.target.value)}
                 className="filter-input"
               />
+              <div className="results-actions">
+                <button
+                  type="button"
+                  className="btn warning small"
+                  onClick={startReviewCycle}
+                  disabled={loadingResults || !hasWrongResults}
+                >
+                  Ponovi napačne
+                </button>
+              </div>
               {loadingResults ? (
                 <p>Nalaganje ...</p>
-              ) : resultsItems.length === 0 ? (
+              ) : filteredResultsItems.length === 0 ? (
                 <p>Ni podatkov.</p>
               ) : (
                 <ul className="items-list">
-                  {resultsItems
-                    .filter((item) => {
-                      if (!resultsFilter.trim()) return true
-                      const q = resultsFilter.toLowerCase()
-                      const haystack = [
-                        item.translation || '',
-                        ...(item.solution || []),
-                      ]
-                        .join(' ')
-                        .toLowerCase()
-                      return haystack.includes(q)
-                    })
-                    .map((item) => {
-                      const isNumberResult = resultsWordType === 'number'
-                      const term = isNumberResult
-                        ? item.translation
-                        : item.solution
-                          ? item.solution.join(' · ')
-                          : '–'
-                      const translation = isNumberResult
-                        ? item.solution
-                          ? item.solution.join(' · ')
-                          : '–'
-                        : item.translation
-                      return (
-                        <li key={item.id}>
-                          <div className="item-line">
-                            <span className="term">{term}</span>
-                            <span className="translation">{translation}</span>
-                          </div>
-                          <div className="item-stats">
-                            <span>Poskusi: {item.attempts ?? 0}</span>
-                            <span>Pravilni: {item.correct ?? 0}</span>
-                            <span>Napačni: {item.wrong ?? 0}</span>
-                            <span>Pogledi: {item.reveals ?? 0}</span>
-                          </div>
-                        </li>
-                      )
-                    })}
+                  {filteredResultsItems.map((item) => {
+                    const isNumberResult = resultsWordType === 'number'
+                    const term = isNumberResult
+                      ? item.translation
+                      : item.solution
+                        ? item.solution.join(' · ')
+                        : '–'
+                    const translation = isNumberResult
+                      ? item.solution
+                        ? item.solution.join(' · ')
+                        : '–'
+                      : item.translation
+                    return (
+                      <li key={item.id}>
+                        <div className="item-line">
+                          <span className="term">{term}</span>
+                          <span className="translation">{translation}</span>
+                        </div>
+                        <div className="item-stats">
+                          <span>Poskusi: {item.attempts ?? 0}</span>
+                          <span>Pravilni: {item.correct ?? 0}</span>
+                          <span>Napačni: {item.wrong ?? 0}</span>
+                          <span>Pogledi: {item.reveals ?? 0}</span>
+                        </div>
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </div>
