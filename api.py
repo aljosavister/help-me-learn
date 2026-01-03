@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 import learn
 
-WordType = Literal["noun", "verb"]
+WordType = Literal["noun", "verb", "number"]
 
 app = FastAPI(
     title="German Trainer API",
@@ -106,6 +106,8 @@ class CycleRequest(BaseModel):
     user_id: int
     word_type: WordType
     include_solutions: bool = False
+    max_number: Optional[int] = Field(default=None, ge=0)
+    cycle_size: Optional[int] = Field(default=None, ge=1)
 
 
 class CycleItem(BaseModel):
@@ -237,12 +239,65 @@ def list_modules(conn: sqlite3.Connection = Depends(get_db)) -> List[ModuleOut]:
             description="",
             count=counts.get("verb", 0),
         ),
+        ModuleOut(
+            type="number",
+            label="Števila",
+            description="Zapis števil po nemško.",
+            count=0,
+        ),
     ]
 
 
 @app.post("/cycles", response_model=CycleResponse)
 def start_cycle(payload: CycleRequest, conn: sqlite3.Connection = Depends(get_db)) -> CycleResponse:
     ensure_user(conn, payload.user_id)
+    if payload.word_type == "number":
+        max_number = payload.max_number if payload.max_number is not None else learn.NUMBER_DEFAULT_MAX
+        if max_number > learn.NUMBER_MAX_LIMIT:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Največja številka mora biti ≤ {learn.NUMBER_MAX_LIMIT}.",
+            )
+        cycle_index = learn.fetch_number_cycle_count(conn, payload.user_id) + 1
+        total_attempts, accuracy = learn.global_number_accuracy(conn, payload.user_id)
+        adaptive = (
+            cycle_index > learn.ADAPTIVE_AFTER_CYCLES
+            or (total_attempts >= learn.MIN_ATTEMPTS_FOR_ADAPTIVE and accuracy >= learn.HIGH_ACCURACY_THRESHOLD)
+        )
+        stats_map = learn.fetch_number_stats(conn, payload.user_id, max_number)
+        selected_numbers = learn.choose_number_cycle_numbers(
+            max_number,
+            stats_map,
+            adaptive,
+            cycle_size=payload.cycle_size,
+        )
+        if not selected_numbers:
+            raise HTTPException(status_code=404, detail="Ni števil za ta razpon.")
+        questions = []
+        labels = learn.get_labels("number", {})
+        for number in selected_numbers:
+            stats = stats_map.get(number)
+            item_stats = learn.build_number_item(number, stats)
+            question = CycleItem(
+                id=item_stats["id"],
+                translation=item_stats["translation"],
+                labels=labels,
+                attempts=item_stats["attempts"],
+                accuracy=item_stats["accuracy"],
+                streak=item_stats["streak"],
+                difficulty=item_stats["difficulty"],
+                solution=[learn.number_to_german(number)] if payload.include_solutions else None,
+            )
+            questions.append(question)
+        mode_note = "adaptivni način" if adaptive else "naključni način"
+        return CycleResponse(
+            cycle_number=cycle_index,
+            adaptive=adaptive,
+            mode=mode_note,
+            total_items=len(questions),
+            items=questions,
+        )
+
     cycle_index = learn.fetch_cycle_count(conn, payload.user_id, payload.word_type) + 1
     total_attempts, accuracy = learn.global_accuracy(conn, payload.user_id, payload.word_type)
     adaptive = (
@@ -284,13 +339,41 @@ def start_cycle(payload: CycleRequest, conn: sqlite3.Connection = Depends(get_db
 @app.post("/cycles/complete")
 def complete_cycle(payload: CycleCompleteRequest, conn: sqlite3.Connection = Depends(get_db)) -> Dict[str, str]:
     ensure_user(conn, payload.user_id)
-    learn.increment_cycle(conn, payload.user_id, payload.word_type)
+    if payload.word_type == "number":
+        learn.increment_number_cycle(conn, payload.user_id)
+    else:
+        learn.increment_cycle(conn, payload.user_id, payload.word_type)
     return {"status": "ok"}
 
 
 @app.post("/attempts", response_model=AttemptResponse)
 def submit_attempt(payload: AttemptRequest, conn: sqlite3.Connection = Depends(get_db)) -> AttemptResponse:
     ensure_user(conn, payload.user_id)
+    if payload.word_type == "number":
+        number = payload.item_id
+        if number < 0 or number > learn.NUMBER_MAX_LIMIT:
+            raise HTTPException(status_code=400, detail="Število je izven dovoljenega razpona.")
+        solutions = [learn.number_to_german(number)]
+        correct = learn.check_answers(
+            payload.answers,
+            solutions,
+            allow_umlaut_fallback=True,
+            collapse_spaces=False,
+        )
+        effective_correct = bool(correct and not payload.revealed)
+        cycle_number = payload.cycle_number or (learn.fetch_number_cycle_count(conn, payload.user_id) + 1)
+        learn.update_number_progress(
+            conn=conn,
+            user_id=payload.user_id,
+            number=number,
+            correct=effective_correct,
+            revealed=payload.revealed,
+            answers=payload.answers,
+            cycle_number=cycle_number,
+        )
+        solution_payload = solutions if (payload.show_solution or payload.revealed) else None
+        return AttemptResponse(correct=effective_correct, revealed=payload.revealed, solution=solution_payload)
+
     row = conn.execute(
         "SELECT id, type, solution_json FROM items WHERE id = ?", (payload.item_id,)
     ).fetchone()
@@ -325,6 +408,8 @@ def browse_items(
     user_id: Optional[int] = Query(default=None),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> List[ItemOut]:
+    if word_type == "number":
+        raise HTTPException(status_code=400, detail="Števil ni mogoče brskati kot seznam vnosov.")
     query = """
     SELECT
         items.id,
@@ -353,6 +438,59 @@ def browse_items(
     return items
 
 
+@app.get("/numbers/results", response_model=List[ItemOut])
+def number_results(
+    user_id: int = Query(...),
+    include_solution: bool = Query(default=False),
+    max_number: Optional[int] = Query(default=None, ge=0),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> List[ItemOut]:
+    ensure_user(conn, user_id)
+    if max_number is not None and max_number > learn.NUMBER_MAX_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Največja številka mora biti ≤ {learn.NUMBER_MAX_LIMIT}.",
+        )
+    query = """
+    SELECT
+        number,
+        attempts,
+        correct,
+        wrong,
+        reveals,
+        correct_streak,
+        last_seen
+    FROM number_stats
+    WHERE user_id = ?
+    """
+    params: List = [user_id]
+    if max_number is not None:
+        query += " AND number <= ?"
+        params.append(max_number)
+    rows = conn.execute(query, tuple(params)).fetchall()
+    labels = learn.get_labels("number", {})
+    items: List[ItemOut] = []
+    for row in rows:
+        number_value = int(row["number"])
+        solution = [learn.number_to_german(number_value)] if include_solution else None
+        items.append(
+            ItemOut(
+                id=number_value,
+                type="number",
+                translation=str(number_value),
+                metadata={},
+                labels=labels,
+                solution=solution,
+                attempts=row["attempts"],
+                correct=row["correct"],
+                wrong=row["wrong"],
+                reveals=row["reveals"],
+                streak=row["correct_streak"],
+            )
+        )
+    return items
+
+
 @app.get("/items/{item_id}", response_model=ItemOut)
 def item_detail(
     item_id: int,
@@ -375,6 +513,35 @@ def user_stats(
     conn: sqlite3.Connection = Depends(get_db),
 ) -> StatsOut:
     ensure_user(conn, user_id)
+    if word_type == "number":
+        stats_row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(attempts), 0) AS attempts,
+                COALESCE(SUM(correct), 0) AS correct,
+                COALESCE(SUM(wrong), 0) AS wrong,
+                COALESCE(SUM(reveals), 0) AS reveals
+            FROM number_stats
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        attempts = stats_row["attempts"] or 0
+        correct = stats_row["correct"] or 0
+        wrong = stats_row["wrong"] or 0
+        reveals = stats_row["reveals"] or 0
+        accuracy = (correct / attempts) if attempts else 0.0
+        cycle_count = learn.fetch_number_cycle_count(conn, user_id)
+        return StatsOut(
+            user_id=user_id,
+            word_type=word_type,
+            attempts=attempts,
+            correct=correct,
+            wrong=wrong,
+            reveals=reveals,
+            accuracy=accuracy,
+            cycle_count=cycle_count,
+        )
     stats_row = conn.execute(
         """
         SELECT
@@ -412,6 +579,8 @@ async def import_csv_endpoint(
     file: UploadFile = File(...),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ImportResult:
+    if word_type == "number":
+        raise HTTPException(status_code=400, detail="Uvoz CSV ni podprt za števila.")
     if file.content_type not in {"text/csv", "application/vnd.ms-excel", "application/octet-stream"}:
         raise HTTPException(status_code=400, detail="Pričakovana je CSV datoteka.")
     raw = await file.read()
@@ -482,6 +651,8 @@ def delete_item(
 
 @app.post("/items", response_model=ItemOut, status_code=201)
 def create_item(payload: ItemCreate, conn: sqlite3.Connection = Depends(get_db)) -> ItemOut:
+    if payload.type == "number":
+        raise HTTPException(status_code=400, detail="Števil ni mogoče dodajati ročno.")
     translation = payload.translation.strip()
     if not translation:
         raise HTTPException(status_code=400, detail="Prevod ne sme biti prazen.")

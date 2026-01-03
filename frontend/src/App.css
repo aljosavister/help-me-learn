@@ -151,6 +151,27 @@ body {
   color: inherit;
 }
 
+.number-config {
+  margin: 1rem 0 0.5rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.number-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.95rem;
+}
+
+.number-config input {
+  padding: 0.65rem 0.9rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+
 .hint {
   color: #9ab0d1;
   font-size: 0.9rem;

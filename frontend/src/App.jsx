@@ -5,9 +5,20 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 const ADAPTIVE_AFTER_CYCLES = 5
 const MIN_ATTEMPTS_FOR_ADAPTIVE = 25
 const HIGH_ACCURACY_THRESHOLD = 0.88
+const NUMBER_MAX_LIMIT = 1000000
+const NUMBER_DEFAULT_MAX = 1000
+const NUMBER_DEFAULT_CYCLE_SIZE = 20
 
-const normalizeText = (text) =>
-  text.trim().toLowerCase().replace(/ß/g, 'ss').replace(/\s+/g, ' ')
+const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
+  let cleaned = text.trim().toLowerCase().replace(/ß/g, 'ss')
+  if (collapseSpaces) {
+    cleaned = cleaned.replace(/\s+/g, ' ')
+  }
+  if (allowUmlautFallback) {
+    cleaned = cleaned.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue')
+  }
+  return cleaned
+}
 
 async function apiFetch(path, options = {}) {
   const isFormData =
@@ -40,6 +51,8 @@ function App() {
   const [selectedUser, setSelectedUser] = useState(null)
   const [selectedModule, setSelectedModule] = useState(null)
   const [newUserName, setNewUserName] = useState('')
+  const [numberMax, setNumberMax] = useState(NUMBER_DEFAULT_MAX)
+  const [numberCycleSize, setNumberCycleSize] = useState(NUMBER_DEFAULT_CYCLE_SIZE)
   const [cycle, setCycle] = useState(null)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [answers, setAnswers] = useState([])
@@ -286,6 +299,7 @@ function App() {
   }
 
   const toggleModuleItems = async (wordType) => {
+    if (wordType === 'number') return
     if (moduleItemsType === wordType) {
       setModuleItemsType(null)
       setModuleItems([])
@@ -314,16 +328,43 @@ function App() {
 
   const handleStartCycle = async () => {
     if (!selectedUser || !selectedModule) return
+    let maxNumberPayload = null
+    let cycleSizePayload = null
+    if (selectedModule === 'number') {
+      const parsed = Number(numberMax)
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        setError('Vnesi celo število ≥ 0 za največjo številko.')
+        return
+      }
+      if (parsed > NUMBER_MAX_LIMIT) {
+        setError(`Največja številka mora biti ≤ ${NUMBER_MAX_LIMIT}.`)
+        return
+      }
+      maxNumberPayload = parsed
+      const sizeParsed = Number(numberCycleSize)
+      if (!Number.isInteger(sizeParsed) || sizeParsed < 1) {
+        setError('Velikost cikla mora biti celo število ≥ 1.')
+        return
+      }
+      cycleSizePayload = sizeParsed
+    }
     setIsBusy(true)
     setError('')
     try {
+      const body = {
+        user_id: selectedUser.id,
+        word_type: selectedModule,
+        include_solutions: true,
+      }
+      if (maxNumberPayload !== null) {
+        body.max_number = maxNumberPayload
+      }
+      if (cycleSizePayload !== null) {
+        body.cycle_size = cycleSizePayload
+      }
       const data = await apiFetch('/cycles', {
         method: 'POST',
-        body: {
-          user_id: selectedUser.id,
-          word_type: selectedModule,
-          include_solutions: true,
-        },
+        body,
       })
       setCycle(data)
       setCurrentIndex(0)
@@ -363,9 +404,13 @@ function App() {
 
   const answersMatchSolution = () => {
     if (!currentQuestion?.solution) return false
-    const normalizedAnswers = answers.map((value) => normalizeText(value || ''))
+    const allowUmlautFallback = selectedModule === 'number'
+    const collapseSpaces = selectedModule !== 'number'
+    const normalizedAnswers = answers.map((value) =>
+      normalizeText(value || '', { allowUmlautFallback, collapseSpaces }),
+    )
     const normalizedSolution = currentQuestion.solution.map((value) =>
-      normalizeText(value || ''),
+      normalizeText(value || '', { allowUmlautFallback, collapseSpaces }),
     )
     return normalizedAnswers.every((value, index) => value === normalizedSolution[index])
   }
@@ -489,15 +534,30 @@ function App() {
 
   const openResultsModal = async (wordType) => {
     if (!selectedUser) return
+    let maxNumberParam = null
+    if (wordType === 'number') {
+      const parsed = Number(numberMax)
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        setError('Vnesi celo število ≥ 0 za največjo številko.')
+        return
+      }
+      if (parsed > NUMBER_MAX_LIMIT) {
+        setError(`Največja številka mora biti ≤ ${NUMBER_MAX_LIMIT}.`)
+        return
+      }
+      maxNumberParam = parsed
+    }
     setShowResultsModal(true)
     setResultsWordType(wordType)
     setLoadingResults(true)
     setResultsItems([])
     setError('')
     try {
-      const data = await apiFetch(
-        `/items?word_type=${wordType}&include_solution=true&user_id=${selectedUser.id}`,
-      )
+      const endpoint =
+        wordType === 'number'
+          ? `/numbers/results?include_solution=true&user_id=${selectedUser.id}&max_number=${maxNumberParam}`
+          : `/items?word_type=${wordType}&include_solution=true&user_id=${selectedUser.id}`
+      const data = await apiFetch(endpoint)
       const sorted = [...data].sort((a, b) => {
         const aAttempts = a.attempts || 0
         const bAttempts = b.attempts || 0
@@ -557,6 +617,13 @@ function App() {
         </div>
       )
     }
+    const isNumberModule = selectedModule === 'number'
+    const moduleLabel =
+      selectedModule === 'noun'
+        ? 'Samostalnik'
+        : selectedModule === 'verb'
+          ? 'Nepravilni glagol'
+          : 'Število'
 
     return (
       <div className="question-card">
@@ -565,10 +632,10 @@ function App() {
           <span>
             Vprašanje {currentIndex + 1}/{cycle.items.length}
           </span>
-          <span>{selectedModule === 'noun' ? 'Samostalnik' : 'Nepravilni glagol'}</span>
+          <span>{moduleLabel}</span>
         </div>
         <div className="translation">
-          <p>Pomen v slovenščini:</p>
+          <p>{isNumberModule ? 'Število:' : 'Pomen v slovenščini:'}</p>
           <h3>{currentQuestion.translation}</h3>
         </div>
         <div className="inputs">
@@ -656,7 +723,7 @@ function App() {
       <header>
         <div>
           <p className="kicker">Nemški trener</p>
-          <h1>Samostalniki & nepravilni glagoli</h1>
+          <h1>Samostalniki, nepravilni glagoli & števila</h1>
         </div>
         <div className="header-actions">
           <div className="api-indicator">
@@ -735,42 +802,63 @@ function App() {
         <div className="panel">
           <h2>2. Izberi sklop</h2>
           <div className="pill-list">
-            {modules.map((module) => (
-              <div key={module.type} className="module-row">
-                <button
-                  className={`pill ${selectedModule === module.type ? 'active' : ''}`}
-                  onClick={() => setSelectedModule(module.type)}
-                >
-                  <strong>
-                    {module.label} ({module.count})
-                  </strong>
-                </button>
-                <button
-                  type="button"
-                  className="btn csv-btn"
-                  onClick={() => triggerCsvDialog(module.type)}
-                  disabled={isImporting}
-                >
-                  Uvozi CSV
-                </button>
-                <button
-                  type="button"
-                  className="btn outline-btn"
-                  onClick={() => toggleModuleItems(module.type)}
-                  disabled={isLoadingItems}
-                >
-                  Uredi seznam
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost"
-                  onClick={() => openResultsModal(module.type)}
-                  disabled={!selectedUser}
-                >
-                  Rezultati
-                </button>
-              </div>
-            ))}
+            {modules.map((module) => {
+              const isNumberModule = module.type === 'number'
+              return (
+                <div key={module.type} className="module-row">
+                  <button
+                    className={`pill ${selectedModule === module.type ? 'active' : ''}`}
+                    onClick={() => setSelectedModule(module.type)}
+                  >
+                    <strong>
+                      {module.label}
+                      {!isNumberModule && ` (${module.count})`}
+                    </strong>
+                  </button>
+                  {!isNumberModule && (
+                    <>
+                      <button
+                        type="button"
+                        className="btn csv-btn"
+                        onClick={() => triggerCsvDialog(module.type)}
+                        disabled={isImporting}
+                      >
+                        Uvozi CSV
+                      </button>
+                      <button
+                        type="button"
+                        className="btn outline-btn"
+                        onClick={() => toggleModuleItems(module.type)}
+                        disabled={isLoadingItems}
+                      >
+                        Uredi seznam
+                      </button>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        onClick={() => openResultsModal(module.type)}
+                        disabled={!selectedUser}
+                      >
+                        Rezultati
+                      </button>
+                    </>
+                  )}
+                  {isNumberModule && (
+                    <>
+                      <button
+                        type="button"
+                        className="btn ghost"
+                        onClick={() => openResultsModal(module.type)}
+                        disabled={!selectedUser}
+                      >
+                        Rezultati
+                      </button>
+                      <span className="hint">Razpon določiš ob zagonu.</span>
+                    </>
+                  )}
+                </div>
+              )
+            })}
             <input
               ref={nounInputRef}
               type="file"
@@ -786,6 +874,33 @@ function App() {
               onChange={(event) => handleCsvFileChange('verb', event)}
             />
           </div>
+          {selectedModule === 'number' && (
+            <div className="number-config">
+              <label>
+                <span>Največja številka</span>
+                <input
+                  type="number"
+                  min="0"
+                  max={NUMBER_MAX_LIMIT}
+                  value={numberMax}
+                  onChange={(event) => setNumberMax(Number(event.target.value))}
+                />
+              </label>
+              <label>
+                <span>Velikost cikla</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={numberCycleSize}
+                  onChange={(event) => setNumberCycleSize(Number(event.target.value))}
+                />
+              </label>
+              <p className="hint">
+                Primer: 1000 pomeni, da vadiš števila od 0 do 1000. Velikost cikla določa število
+                vprašanj v enem zagonu.
+              </p>
+            </div>
+          )}
           <button
             className="btn primary full"
             onClick={handleStartCycle}
@@ -816,7 +931,15 @@ function App() {
           )}
           {stats && (
             <div className="stats-box">
-              <h3>Statistika ({stats.word_type === 'noun' ? 'samostalniki' : 'glagoli'})</h3>
+              <h3>
+                Statistika (
+                {stats.word_type === 'noun'
+                  ? 'samostalniki'
+                  : stats.word_type === 'verb'
+                    ? 'glagoli'
+                    : 'števila'}
+                )
+              </h3>
               <ul>
                 <li>
                   Poskusi: <strong>{stats.attempts}</strong>
@@ -1064,7 +1187,13 @@ function App() {
           <div className="modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <h3>
-                Rezultati ({resultsWordType === 'noun' ? 'Samostalniki' : 'Nepravilni glagoli'})
+                Rezultati (
+                {resultsWordType === 'noun'
+                  ? 'Samostalniki'
+                  : resultsWordType === 'verb'
+                    ? 'Nepravilni glagoli'
+                    : 'Števila'}
+                )
               </h3>
               <button type="button" className="close-modal" onClick={() => setShowResultsModal(false)}>
                 ×
@@ -1073,7 +1202,7 @@ function App() {
             <div className="modal-body">
               <input
                 type="text"
-                placeholder="Filter po geslih/prevodih"
+                placeholder="Filter po geslih, prevodih ali številih"
                 value={resultsFilter}
                 onChange={(e) => setResultsFilter(e.target.value)}
                 className="filter-input"
@@ -1096,22 +1225,33 @@ function App() {
                         .toLowerCase()
                       return haystack.includes(q)
                     })
-                    .map((item) => (
-                      <li key={item.id}>
-                        <div className="item-line">
-                          <span className="term">
-                            {item.solution ? item.solution.join(' · ') : '–'}
-                          </span>
-                          <span className="translation">{item.translation}</span>
-                        </div>
-                        <div className="item-stats">
-                          <span>Poskusi: {item.attempts ?? 0}</span>
-                          <span>Pravilni: {item.correct ?? 0}</span>
-                          <span>Napačni: {item.wrong ?? 0}</span>
-                          <span>Pogledi: {item.reveals ?? 0}</span>
-                        </div>
-                      </li>
-                    ))}
+                    .map((item) => {
+                      const isNumberResult = resultsWordType === 'number'
+                      const term = isNumberResult
+                        ? item.translation
+                        : item.solution
+                          ? item.solution.join(' · ')
+                          : '–'
+                      const translation = isNumberResult
+                        ? item.solution
+                          ? item.solution.join(' · ')
+                          : '–'
+                        : item.translation
+                      return (
+                        <li key={item.id}>
+                          <div className="item-line">
+                            <span className="term">{term}</span>
+                            <span className="translation">{translation}</span>
+                          </div>
+                          <div className="item-stats">
+                            <span>Poskusi: {item.attempts ?? 0}</span>
+                            <span>Pravilni: {item.correct ?? 0}</span>
+                            <span>Napačni: {item.wrong ?? 0}</span>
+                            <span>Pogledi: {item.reveals ?? 0}</span>
+                          </div>
+                        </li>
+                      )
+                    })}
                 </ul>
               )}
             </div>

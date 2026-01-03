@@ -25,12 +25,16 @@ ADAPTIVE_AFTER_CYCLES = 5
 MIN_ATTEMPTS_FOR_ADAPTIVE = 25
 HIGH_ACCURACY_THRESHOLD = 0.88
 EASY_REVIEW_FRACTION = 0.25  # share of "easy" cards kept in adaptive cycles
+NUMBER_CYCLE_SIZE = 20
+NUMBER_MAX_LIMIT = 1_000_000
+NUMBER_DEFAULT_MAX = 1_000
 
 QUIT_COMMANDS = {"q", "quit", "exit"}
 SHOW_COMMANDS = {"?", "help", "pomoc", "answer", "odgovor"}
 SKIP_COMMANDS = {"skip", "naprej", "s"}
 NOUN_LABELS = ["člen + samostalnik"]
 VERB_LABELS = ["infinitiv", "3. oseba ednine", "preterit", "perfekt"]
+NUMBER_LABELS = ["Zapis po nemško"]
 
 USE_COLORS = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 COLOR_RESET = "\033[0m"
@@ -49,9 +53,88 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def normalize_text(value: str) -> str:
-    cleaned = " ".join(value.strip().lower().replace("ß", "ss").split())
+def normalize_text(
+    value: str,
+    allow_umlaut_fallback: bool = False,
+    collapse_spaces: bool = True,
+) -> str:
+    cleaned = value.strip().lower().replace("ß", "ss")
+    if collapse_spaces:
+        cleaned = " ".join(cleaned.split())
+    if allow_umlaut_fallback:
+        cleaned = (
+            cleaned.replace("ä", "ae")
+            .replace("ö", "oe")
+            .replace("ü", "ue")
+        )
     return cleaned
+
+
+NUMBER_BASIC = {
+    0: "null",
+    1: "eins",
+    2: "zwei",
+    3: "drei",
+    4: "vier",
+    5: "fünf",
+    6: "sechs",
+    7: "sieben",
+    8: "acht",
+    9: "neun",
+    10: "zehn",
+    11: "elf",
+    12: "zwölf",
+    13: "dreizehn",
+    14: "vierzehn",
+    15: "fünfzehn",
+    16: "sechzehn",
+    17: "siebzehn",
+    18: "achtzehn",
+    19: "neunzehn",
+}
+
+NUMBER_TENS = {
+    20: "zwanzig",
+    30: "dreißig",
+    40: "vierzig",
+    50: "fünfzig",
+    60: "sechzig",
+    70: "siebzig",
+    80: "achtzig",
+    90: "neunzig",
+}
+
+
+def number_to_german(value: int) -> str:
+    if value < 0:
+        raise ValueError("Število mora biti nenegativno.")
+    if value > NUMBER_MAX_LIMIT:
+        raise ValueError("Število je preveliko.")
+    if value in NUMBER_BASIC:
+        return NUMBER_BASIC[value]
+    if value < 100:
+        tens = (value // 10) * 10
+        ones = value % 10
+        tens_word = NUMBER_TENS[tens]
+        if ones == 0:
+            return tens_word
+        ones_word = "ein" if ones == 1 else NUMBER_BASIC[ones]
+        return f"{ones_word}und{tens_word}"
+    if value < 1000:
+        hundreds = value // 100
+        remainder = value % 100
+        prefix = "ein" if hundreds == 1 else NUMBER_BASIC[hundreds]
+        base = f"{prefix}hundert"
+        return base if remainder == 0 else base + number_to_german(remainder)
+    if value < 1_000_000:
+        thousands = value // 1000
+        remainder = value % 1000
+        prefix = "ein" if thousands == 1 else number_to_german(thousands)
+        base = f"{prefix}tausend"
+        return base if remainder == 0 else base + number_to_german(remainder)
+    if value == 1_000_000:
+        return "eine Million"
+    raise ValueError("Število je preveliko.")
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -108,6 +191,40 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             last_cycle_at TEXT,
             PRIMARY KEY (user_id, word_type),
             CHECK(word_type IN ('noun', 'verb')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS number_stats (
+            user_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            wrong INTEGER NOT NULL DEFAULT 0,
+            reveals INTEGER NOT NULL DEFAULT 0,
+            correct_streak INTEGER NOT NULL DEFAULT 0,
+            last_result TEXT,
+            last_seen TEXT,
+            PRIMARY KEY (user_id, number),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS number_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            asked_at TEXT NOT NULL,
+            was_correct INTEGER NOT NULL,
+            was_revealed INTEGER NOT NULL,
+            answers_json TEXT NOT NULL,
+            cycle_number INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS number_cycles (
+            user_id INTEGER NOT NULL,
+            cycles INTEGER NOT NULL DEFAULT 0,
+            last_cycle_at TEXT,
+            PRIMARY KEY (user_id),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         """
@@ -349,6 +466,162 @@ def global_accuracy(conn: sqlite3.Connection, user_id: int, word_type: str) -> T
     return attempts, accuracy
 
 
+def fetch_number_cycle_count(conn: sqlite3.Connection, user_id: int) -> int:
+    row = conn.execute(
+        "SELECT cycles FROM number_cycles WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    return int(row["cycles"]) if row else 0
+
+
+def increment_number_cycle(conn: sqlite3.Connection, user_id: int) -> None:
+    current = fetch_number_cycle_count(conn, user_id)
+    if current == 0:
+        conn.execute(
+            """
+            INSERT INTO number_cycles (user_id, cycles, last_cycle_at)
+            VALUES (?, 1, ?)
+            """,
+            (user_id, now_iso()),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE number_cycles
+            SET cycles = ?, last_cycle_at = ?
+            WHERE user_id = ?
+            """,
+            (current + 1, now_iso(), user_id),
+        )
+    conn.commit()
+
+
+def global_number_accuracy(conn: sqlite3.Connection, user_id: int) -> Tuple[int, float]:
+    row = conn.execute(
+        """
+        SELECT
+            COALESCE(SUM(attempts), 0) AS att,
+            COALESCE(SUM(correct), 0) AS corr
+        FROM number_stats
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+    attempts = int(row["att"])
+    accuracy = (row["corr"] / attempts) if attempts else 0.0
+    return attempts, accuracy
+
+
+def fetch_number_stats(conn: sqlite3.Connection, user_id: int, max_number: int) -> Dict[int, Dict]:
+    rows = conn.execute(
+        """
+        SELECT
+            number,
+            attempts,
+            correct,
+            wrong,
+            reveals,
+            correct_streak,
+            last_seen
+        FROM number_stats
+        WHERE user_id = ? AND number <= ?
+        """,
+        (user_id, max_number),
+    ).fetchall()
+    stats_map: Dict[int, Dict] = {}
+    for row in rows:
+        stats_map[int(row["number"])] = {
+            "attempts": row["attempts"],
+            "correct": row["correct"],
+            "wrong": row["wrong"],
+            "reveals": row["reveals"],
+            "streak": row["correct_streak"],
+            "last_seen": row["last_seen"],
+        }
+    return stats_map
+
+
+def default_number_stats() -> Dict[str, object]:
+    return {
+        "attempts": 0,
+        "correct": 0,
+        "wrong": 0,
+        "reveals": 0,
+        "streak": 0,
+        "last_seen": None,
+    }
+
+
+def build_number_item(number: int, stats: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+    payload = default_number_stats()
+    if stats:
+        payload.update(stats)
+    attempts = int(payload["attempts"] or 0)
+    wrong = int(payload["wrong"] or 0)
+    accuracy = (attempts - wrong) / attempts if attempts else 0.0
+    item = {
+        "id": number,
+        "translation": str(number),
+        "attempts": attempts,
+        "correct": int(payload["correct"] or 0),
+        "wrong": wrong,
+        "reveals": int(payload["reveals"] or 0),
+        "streak": int(payload["streak"] or 0),
+        "last_seen": payload["last_seen"],
+        "accuracy": accuracy,
+    }
+    item["difficulty"] = compute_difficulty(item)
+    return item
+
+
+def choose_number_cycle_numbers(
+    max_number: int,
+    stats_map: Dict[int, Dict[str, object]],
+    adaptive: bool,
+    cycle_size: Optional[int] = None,
+) -> List[int]:
+    if max_number < 0:
+        return []
+    total_count = max_number + 1
+    if cycle_size is None or cycle_size <= 0:
+        cycle_size = NUMBER_CYCLE_SIZE
+    target_size = min(cycle_size, total_count)
+    numbers = list(range(0, max_number + 1))
+
+    if not adaptive:
+        if total_count <= target_size:
+            random.shuffle(numbers)
+            return numbers
+        return random.sample(numbers, target_size)
+
+    hard: List[int] = []
+    easy: List[int] = []
+    for number in numbers:
+        stats = stats_map.get(number)
+        attempts = int(stats["attempts"]) if stats else 0
+        wrong = int(stats["wrong"]) if stats else 0
+        streak = int(stats["streak"]) if stats else 0
+        accuracy = (attempts - wrong) / attempts if attempts else 0.0
+        if attempts == 0 or accuracy < HIGH_ACCURACY_THRESHOLD or streak < 3:
+            hard.append(number)
+        else:
+            easy.append(number)
+
+    random.shuffle(hard)
+    random.shuffle(easy)
+
+    easy_count = max(1, int(target_size * EASY_REVIEW_FRACTION))
+    hard_count = max(0, target_size - easy_count)
+    selected = hard[:hard_count] + easy[:easy_count]
+
+    if len(selected) < target_size:
+        remaining_pool = hard[hard_count:] + easy[easy_count:]
+        selected += remaining_pool[: target_size - len(selected)]
+
+    random.shuffle(selected)
+    return selected
+
+
 def choose_cycle_items(items: List[Dict], adaptive: bool) -> List[Dict]:
     if not items:
         return []
@@ -380,6 +653,8 @@ def get_labels(word_type: str, metadata: Dict) -> List[str]:
     stored = metadata.get("labels")
     if stored:
         return stored
+    if word_type == "number":
+        return NUMBER_LABELS
     if word_type == "verb":
         return VERB_LABELS
     return NOUN_LABELS
@@ -423,9 +698,28 @@ def collect_answers(labels: Sequence[str]) -> Tuple[Optional[List[str]], bool, b
     return (answers if not aborted else None), revealed, aborted
 
 
-def check_answers(user_answers: Sequence[str], solutions: Sequence[str]) -> bool:
-    normalized_user = [normalize_text(value) for value in user_answers]
-    normalized_sol = [normalize_text(value) for value in solutions]
+def check_answers(
+    user_answers: Sequence[str],
+    solutions: Sequence[str],
+    allow_umlaut_fallback: bool = False,
+    collapse_spaces: bool = True,
+) -> bool:
+    normalized_user = [
+        normalize_text(
+            value,
+            allow_umlaut_fallback=allow_umlaut_fallback,
+            collapse_spaces=collapse_spaces,
+        )
+        for value in user_answers
+    ]
+    normalized_sol = [
+        normalize_text(
+            value,
+            allow_umlaut_fallback=allow_umlaut_fallback,
+            collapse_spaces=collapse_spaces,
+        )
+        for value in solutions
+    ]
     return normalized_user == normalized_sol
 
 
@@ -519,6 +813,67 @@ def update_progress(
         (
             user_id,
             item_id,
+            now,
+            correct_value,
+            reveal_value,
+            json.dumps(list(answers)),
+            cycle_number,
+        ),
+    )
+    conn.commit()
+
+
+def update_number_progress(
+    conn: sqlite3.Connection,
+    user_id: int,
+    number: int,
+    correct: bool,
+    revealed: bool,
+    answers: Sequence[str],
+    cycle_number: int,
+) -> None:
+    now = now_iso()
+    result_label = "correct" if correct else ("revealed" if revealed else "wrong")
+    correct_value = 1 if correct else 0
+    wrong_value = 0 if correct else 1
+    reveal_value = 1 if revealed else 0
+    conn.execute(
+        """
+        INSERT INTO number_stats (
+            user_id, number, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+        )
+        VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, number) DO UPDATE SET
+            attempts = number_stats.attempts + 1,
+            correct = number_stats.correct + excluded.correct,
+            wrong = number_stats.wrong + excluded.wrong,
+            reveals = number_stats.reveals + excluded.reveals,
+            correct_streak = CASE
+                WHEN excluded.last_result = 'correct' THEN number_stats.correct_streak + 1
+                ELSE 0
+            END,
+            last_result = excluded.last_result,
+            last_seen = excluded.last_seen
+        """,
+        (
+            user_id,
+            number,
+            correct_value,
+            wrong_value,
+            reveal_value,
+            1 if correct else 0,
+            result_label,
+            now,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO number_attempts (user_id, number, asked_at, was_correct, was_revealed, answers_json, cycle_number)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            number,
             now,
             correct_value,
             reveal_value,
