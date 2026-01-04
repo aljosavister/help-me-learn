@@ -51,6 +51,7 @@ NOUN_LABELS = ["člen + samostalnik"]
 VERB_LABELS = ["infinitiv", "3. oseba ednine", "preterit", "perfekt"]
 NUMBER_LABELS = ["Zapis po nemško"]
 FAMILY_LABELS_NOUN = ["člen + samostalnik", "plural (z die)"]
+FAMILY_LABELS_NOUN_SINGULAR = ["člen + samostalnik"]
 FAMILY_LABELS_NOUN_PLURAL = ["plural (z die)"]
 FAMILY_LABELS_PHRASE = ["Zapis po nemško"]
 
@@ -501,9 +502,6 @@ def load_family_csv_records() -> List[Dict[str, str]]:
 
 
 def seed_family_items(conn: sqlite3.Connection) -> int:
-    existing = conn.execute("SELECT 1 FROM family_items LIMIT 1").fetchone()
-    if existing:
-        return 0
     records = load_family_csv_records()
     if not records:
         return 0
@@ -538,9 +536,6 @@ def seed_family_items(conn: sqlite3.Connection) -> int:
 
 
 def seed_family_cards(conn: sqlite3.Connection) -> int:
-    existing = conn.execute("SELECT 1 FROM family_cards LIMIT 1").fetchone()
-    if existing:
-        return 0
     rows = conn.execute(
         "SELECT id, gender FROM family_items ORDER BY id"
     ).fetchall()
@@ -550,16 +545,27 @@ def seed_family_cards(conn: sqlite3.Connection) -> int:
     for row in rows:
         item_id = row["id"]
         gender = row["gender"]
-        number_form = "plural" if gender == "pl" else "pair"
-        cur = conn.execute(
-            """
-            INSERT OR IGNORE INTO family_cards (item_id, mode, case_name, pronoun, number_form)
-            VALUES (?, 'noun', NULL, NULL, ?)
-            """,
-            (item_id, number_form),
-        )
-        if cur.rowcount:
-            added += 1
+        if gender == "pl":
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO family_cards (item_id, mode, case_name, pronoun, number_form)
+                VALUES (?, 'noun', NULL, NULL, 'plural')
+                """,
+                (item_id,),
+            )
+            if cur.rowcount:
+                added += 1
+        else:
+            for number_form in ("pair", "singular"):
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO family_cards (item_id, mode, case_name, pronoun, number_form)
+                    VALUES (?, 'noun', NULL, NULL, ?)
+                    """,
+                    (item_id, number_form),
+                )
+                if cur.rowcount:
+                    added += 1
         phrase_number = "plural" if gender == "pl" else "singular"
         for case_name in FAMILY_CASES:
             for pronoun in FAMILY_PRONOUNS:
@@ -941,6 +947,11 @@ def build_family_card_payload(row: sqlite3.Row) -> Tuple[str, List[str], List[st
             solutions = [f"die {row['plural']}"]
             return translation, labels, solutions
         article = FAMILY_GERMAN_ARTICLES[gender]
+        if row["number_form"] == "singular":
+            translation = row["sl_singular"]
+            labels = FAMILY_LABELS_NOUN_SINGULAR
+            solutions = [f"{article} {row['lemma']}"]
+            return translation, labels, solutions
         translation = f"{row['sl_singular']} / {row['sl_plural']}"
         labels = FAMILY_LABELS_NOUN
         solutions = [f"{article} {row['lemma']}", f"die {row['plural']}"]
@@ -968,6 +979,7 @@ def fetch_family_cards_with_stats(
     levels: Sequence[str],
     modes: Sequence[str],
     cases: Optional[Sequence[str]] = None,
+    include_plural: bool = True,
 ) -> List[Dict]:
     if not levels or not modes:
         return []
@@ -1006,6 +1018,10 @@ def fetch_family_cards_with_stats(
         case_placeholders = ", ".join("?" * len(cases))
         query += f" AND (c.mode != 'phrase' OR c.case_name IN ({case_placeholders}))"
         params.extend(cases)
+    noun_forms = ("pair", "plural") if include_plural else ("singular", "plural")
+    noun_placeholders = ", ".join("?" * len(noun_forms))
+    query += f" AND (c.mode != 'noun' OR c.number_form IN ({noun_placeholders}))"
+    params.extend(noun_forms)
     rows = conn.execute(query, tuple(params)).fetchall()
     items: List[Dict] = []
     for row in rows:
@@ -1037,6 +1053,7 @@ def fetch_family_results(
     levels: Sequence[str],
     modes: Sequence[str],
     cases: Optional[Sequence[str]] = None,
+    include_plural: bool = True,
 ) -> List[Dict]:
     if not levels or not modes:
         return []
@@ -1075,6 +1092,10 @@ def fetch_family_results(
         case_placeholders = ", ".join("?" * len(cases))
         query += f" AND (c.mode != 'phrase' OR c.case_name IN ({case_placeholders}))"
         params.extend(cases)
+    noun_forms = ("pair", "plural") if include_plural else ("singular", "plural")
+    noun_placeholders = ", ".join("?" * len(noun_forms))
+    query += f" AND (c.mode != 'noun' OR c.number_form IN ({noun_placeholders}))"
+    params.extend(noun_forms)
     rows = conn.execute(query, tuple(params)).fetchall()
     results: List[Dict] = []
     for row in rows:

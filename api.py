@@ -126,6 +126,7 @@ class CycleRequest(BaseModel):
     family_levels: Optional[List[FamilyLevel]] = None
     family_cases: Optional[List[FamilyCase]] = None
     family_modes: Optional[List[FamilyMode]] = None
+    family_include_plural: bool = True
 
 
 class CycleItem(BaseModel):
@@ -350,7 +351,14 @@ def start_cycle(payload: CycleRequest, conn: sqlite3.Connection = Depends(get_db
             cycle_index > learn.ADAPTIVE_AFTER_CYCLES
             or (total_attempts >= learn.MIN_ATTEMPTS_FOR_ADAPTIVE and accuracy >= learn.HIGH_ACCURACY_THRESHOLD)
         )
-        items = learn.fetch_family_cards_with_stats(conn, payload.user_id, levels, modes, cases)
+        items = learn.fetch_family_cards_with_stats(
+            conn,
+            payload.user_id,
+            levels,
+            modes,
+            cases,
+            include_plural=payload.family_include_plural,
+        )
         if not items:
             raise HTTPException(status_code=404, detail="Ni kartic za izbrane nastavitve.")
         selected = learn.choose_family_cycle_items(items, adaptive)
@@ -603,6 +611,7 @@ def family_results(
     levels: Optional[List[FamilyLevel]] = Query(default=None),
     cases: Optional[List[FamilyCase]] = Query(default=None),
     modes: Optional[List[FamilyMode]] = Query(default=None),
+    include_plural: bool = Query(default=True),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> List[ItemOut]:
     ensure_user(conn, user_id)
@@ -614,7 +623,14 @@ def family_results(
         cases = ["nominative"]
     if "phrase" in modes and not cases:
         raise HTTPException(status_code=400, detail="Izberi vsaj en sklon.")
-    results = learn.fetch_family_results(conn, user_id, levels, modes, cases)
+    results = learn.fetch_family_results(
+        conn,
+        user_id,
+        levels,
+        modes,
+        cases,
+        include_plural=include_plural,
+    )
     items: List[ItemOut] = []
     for row in results:
         items.append(

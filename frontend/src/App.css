@@ -33,24 +33,10 @@ body {
   margin: 0;
 }
 
-.api-indicator {
-  font-size: 0.85rem;
-  color: #9cb0c9;
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.6rem 0.9rem;
-  border-radius: 0.6rem;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
 .header-actions {
   display: flex;
   align-items: center;
   gap: 0.7rem;
-}
-
-.api-indicator span {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  color: #f4d36d;
 }
 
 .panel-grid {

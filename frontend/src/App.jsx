@@ -32,12 +32,13 @@ const FAMILY_CASES = [
   { key: 'dative', label: 'Dativ' },
 ]
 const FAMILY_MODES = [
-  { key: 'noun', label: 'Samostalniki + plural' },
+  { key: 'noun', label: 'Samostalniki' },
   { key: 'phrase', label: 'Fraze (moj/tvoj/...)' },
 ]
 const FAMILY_LEVELS_STORAGE_KEY = 'familyLevels'
 const FAMILY_CASES_STORAGE_KEY = 'familyCases'
 const FAMILY_MODES_STORAGE_KEY = 'familyModes'
+const FAMILY_INCLUDE_PLURAL_KEY = 'familyIncludePlural'
 
 const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
   let cleaned = text.trim().toLowerCase().replace(/ß/g, 'ss')
@@ -90,6 +91,7 @@ function App() {
   const [familyLevels, setFamilyLevels] = useState(['A1'])
   const [familyCases, setFamilyCases] = useState(['nominative'])
   const [familyModes, setFamilyModes] = useState(['noun', 'phrase'])
+  const [familyIncludePlural, setFamilyIncludePlural] = useState(true)
   const [cycle, setCycle] = useState(null)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [answers, setAnswers] = useState([])
@@ -231,6 +233,10 @@ function App() {
           }
         }
       }
+      const storedIncludePlural = localStorage.getItem(FAMILY_INCLUDE_PLURAL_KEY)
+      if (storedIncludePlural !== null) {
+        setFamilyIncludePlural(storedIncludePlural === 'true')
+      }
     } catch (err) {
       console.error('Failed to load number components from storage', err)
     }
@@ -248,6 +254,7 @@ function App() {
       localStorage.setItem(FAMILY_LEVELS_STORAGE_KEY, JSON.stringify(familyLevels))
       localStorage.setItem(FAMILY_CASES_STORAGE_KEY, JSON.stringify(familyCases))
       localStorage.setItem(FAMILY_MODES_STORAGE_KEY, JSON.stringify(familyModes))
+      localStorage.setItem(FAMILY_INCLUDE_PLURAL_KEY, String(familyIncludePlural))
     } catch (err) {
       console.error('Failed to save number components to storage', err)
     }
@@ -259,6 +266,7 @@ function App() {
     familyLevels,
     familyCases,
     familyModes,
+    familyIncludePlural,
   ])
 
   useEffect(() => {
@@ -477,6 +485,7 @@ function App() {
     let familyLevelsPayload = null
     let familyCasesPayload = null
     let familyModesPayload = null
+    let familyIncludePluralPayload = null
     if (selectedModule === 'number') {
       const parsed = Number(numberMax)
       if (!Number.isInteger(parsed) || parsed < 0) {
@@ -519,6 +528,7 @@ function App() {
       familyLevelsPayload = familyLevels
       familyModesPayload = familyModes
       familyCasesPayload = effectiveCases
+      familyIncludePluralPayload = familyIncludePlural
     }
     setIsBusy(true)
     setError('')
@@ -545,6 +555,9 @@ function App() {
       }
       if (familyModesPayload) {
         body.family_modes = familyModesPayload
+      }
+      if (familyIncludePluralPayload !== null) {
+        body.family_include_plural = familyIncludePluralPayload
       }
       const data = await apiFetch('/cycles', {
         method: 'POST',
@@ -795,6 +808,7 @@ function App() {
       const params = new URLSearchParams({
         include_solution: 'true',
         user_id: String(selectedUser.id),
+        include_plural: String(familyIncludePlural),
       })
       familyLevels.forEach((level) => params.append('levels', level))
       effectiveCases.forEach((item) => params.append('cases', item))
@@ -1056,9 +1070,6 @@ function App() {
           <h1>Samostalniki, nepravilni glagoli, števila & družina</h1>
         </div>
         <div className="header-actions">
-          <div className="api-indicator">
-            API: <span>{API_BASE}</span>
-          </div>
           <button
             className="btn ghost"
             onClick={loadUsersAndModules}
@@ -1314,6 +1325,15 @@ function App() {
                       <span>{mode.label}</span>
                     </label>
                   ))}
+                  <label className="family-option">
+                    <input
+                      type="checkbox"
+                      checked={familyIncludePlural}
+                      onChange={(event) => setFamilyIncludePlural(event.target.checked)}
+                      disabled={!familyModes.includes('noun')}
+                    />
+                    <span>Vključi plural pri samostalnikih</span>
+                  </label>
                 </div>
               </div>
               <div className="family-section">
