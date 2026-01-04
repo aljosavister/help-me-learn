@@ -63,6 +63,9 @@ const USER_LEVEL_OPTIONS = [
   { value: 3, label: 'Skrbnik' },
 ]
 const SESSION_TOKEN_STORAGE_KEY = 'germanTrainerSessionToken'
+const PAGE_COLLECTIONS = 'collections'
+const PAGE_COLLECTION = 'collection'
+const PAGE_PRACTICE = 'practice'
 
 const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
   let cleaned = text.trim().toLowerCase().replace(/ß/g, 'ss')
@@ -76,22 +79,36 @@ const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = tru
 }
 
 async function apiFetch(path, options = {}) {
+  const { timeoutMs = 12000, ...requestOptions } = options
   const isFormData =
-    typeof FormData !== 'undefined' && options.body instanceof FormData
+    typeof FormData !== 'undefined' && requestOptions.body instanceof FormData
   const defaultHeaders = isFormData ? {} : { 'Content-Type': 'application/json' }
-  const headers = { ...defaultHeaders, ...(options.headers || {}) }
+  const headers = { ...defaultHeaders, ...(requestOptions.headers || {}) }
   const token = localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)
   if (token) {
     headers.Authorization = `Bearer ${token}`
   }
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
   const fetchOptions = {
-    ...options,
+    ...requestOptions,
     headers,
+    signal: controller.signal,
   }
   if (fetchOptions.body && typeof fetchOptions.body !== 'string' && !isFormData) {
     fetchOptions.body = JSON.stringify(fetchOptions.body)
   }
-  const response = await fetch(`${API_BASE}${path}`, fetchOptions)
+  let response
+  try {
+    response = await fetch(`${API_BASE}${path}`, fetchOptions)
+  } catch (err) {
+    window.clearTimeout(timeoutId)
+    if (err?.name === 'AbortError') {
+      throw new Error('Zahteva je potekla. Preveri, ali API deluje.')
+    }
+    throw err
+  }
+  window.clearTimeout(timeoutId)
   const contentType = response.headers.get('content-type') || ''
   const isJson = contentType.includes('application/json')
   const payload = isJson ? await response.json() : await response.text()
@@ -195,6 +212,9 @@ function App() {
   const [authPassword, setAuthPassword] = useState('')
   const [isAuthBusy, setIsAuthBusy] = useState(false)
   const [localUserForm, setLocalUserForm] = useState({ name: '', email: '', password: '' })
+  const [currentPage, setCurrentPage] = useState(PAGE_COLLECTIONS)
+  const [collectionPreview, setCollectionPreview] = useState(null)
+  const [showAuthModal, setShowAuthModal] = useState(false)
   const [proposalFilters, setProposalFilters] = useState({
     wordType: 'all',
     proposalType: 'all',
@@ -544,6 +564,86 @@ function App() {
     setResultsFilter('')
   }
 
+  const openCollectionDetail = (item) => {
+    setCollectionPreview(item)
+    setCurrentPage(PAGE_COLLECTION)
+  }
+
+  const goToCollections = () => {
+    setCollectionPreview(null)
+    setCurrentPage(PAGE_COLLECTIONS)
+  }
+
+  const openPractice = async (item = null) => {
+    if (item) {
+      await activateCollection(item)
+    }
+    if (!activeCollection && !item) {
+      setError('Najprej izberi zbirko.')
+      setCurrentPage(PAGE_COLLECTIONS)
+      return
+    }
+    setCollectionPreview(null)
+    setCurrentPage(PAGE_PRACTICE)
+  }
+
+  const openActiveCollectionDetail = () => {
+    setCollectionPreview(null)
+    setCurrentPage(PAGE_COLLECTION)
+  }
+
+  const openOwnerCollectionDetail = async (collection, version) => {
+    await activateOwnerVersion(collection, version)
+    openActiveCollectionDetail()
+  }
+
+  const clearActiveCollectionState = async () => {
+    setActiveCollection(null)
+    localStorage.removeItem(ACTIVE_COLLECTION_STORAGE_KEY)
+    await refreshModules(null)
+    loadStoredSettings()
+    resetCycleState()
+    setStats(null)
+    setSelectedModule(null)
+    setShowResultsModal(false)
+    setResultsItems([])
+    setResultsFilter('')
+  }
+
+  const collectionView = (() => {
+    if (collectionPreview) {
+      return {
+        collectionId: collectionPreview.collection_id,
+        versionId: collectionPreview.version_id,
+        title: collectionPreview.title,
+        description: collectionPreview.description,
+        ownerName: collectionPreview.owner_name,
+        versionNumber: collectionPreview.version_number,
+        versionTitle: collectionPreview.version_title,
+        versionDescription: collectionPreview.version_description,
+        accessCode: collectionPreview.access_code,
+        config: collectionPreview.config || {},
+        payload: collectionPreview,
+      }
+    }
+    if (activeCollection) {
+      return {
+        collectionId: activeCollection.collectionId,
+        versionId: activeCollection.versionId,
+        title: activeCollection.collectionTitle,
+        description: activeCollection.collectionDescription,
+        ownerName: activeCollection.ownerName,
+        versionNumber: activeCollection.versionNumber,
+        versionTitle: activeCollection.versionTitle,
+        versionDescription: activeCollection.versionDescription,
+        accessCode: activeCollection.accessCode,
+        config: activeCollection.config || {},
+        payload: null,
+      }
+    }
+    return null
+  })()
+
   const activateOwnerVersion = async (collection, version) => {
     const next = {
       collectionId: collection.id,
@@ -569,19 +669,6 @@ function App() {
     setResultsFilter('')
   }
 
-  const clearActiveCollection = async () => {
-    setActiveCollection(null)
-    localStorage.removeItem(ACTIVE_COLLECTION_STORAGE_KEY)
-    await refreshModules(null)
-    loadStoredSettings()
-    resetCycleState()
-    setStats(null)
-    setSelectedModule(null)
-    setShowResultsModal(false)
-    setResultsItems([])
-    setResultsFilter('')
-  }
-
   const loadPublicCollections = useCallback(async () => {
     try {
       const data = await apiFetch('/collections/public')
@@ -589,7 +676,7 @@ function App() {
     } catch (err) {
       setError(err.message)
     }
-  }, [])
+  }, [activeCollection])
 
   const loadOwnerCollections = useCallback(async (userId) => {
     try {
@@ -607,6 +694,7 @@ function App() {
     try {
       const data = await apiFetch(`/collections/code/${collectionCode.trim().toUpperCase()}`)
       await activateCollection(data)
+      openCollectionDetail(data)
       setCollectionCode('')
     } catch (err) {
       setError(err.message)
@@ -636,6 +724,31 @@ function App() {
       setNewCollection({ title: '', description: '' })
       await loadOwnerCollections(selectedUser.id)
       await loadPublicCollections()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollectionBusy(false)
+    }
+  }
+
+  const handleDeleteCollection = async (collectionId, title) => {
+    if (!window.confirm(`Izbrišem zbirko "${title}"?`)) return
+    setCollectionBusy(true)
+    setError('')
+    try {
+      await apiFetch(`/collections/${collectionId}`, { method: 'DELETE' })
+      if (activeCollection?.collectionId === collectionId) {
+        await clearActiveCollectionState()
+      }
+      if (collectionPreview?.collection_id === collectionId) {
+        setCollectionPreview(null)
+        setCurrentPage(PAGE_COLLECTIONS)
+      }
+      if (selectedUser && !isAnonymous) {
+        await loadOwnerCollections(selectedUser.id)
+      }
+      await loadPublicCollections()
+      setInfoMessage('Zbirka izbrisana.')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -1414,6 +1527,11 @@ function App() {
 
   const handleStartCycle = async () => {
     if (!selectedUser || !selectedModule) return
+    if (!activeCollectionId) {
+      setError('Najprej izberi zbirko.')
+      setCurrentPage(PAGE_COLLECTIONS)
+      return
+    }
     let maxNumberPayload = null
     let cycleSizePayload = null
     let numberComponentsPayload = null
@@ -2077,13 +2195,36 @@ function App() {
           <p className="kicker">Nemški trener</p>
           <h1>Samostalniki, nepravilni glagoli, števila & družina</h1>
         </div>
+        <nav className="top-nav">
+          <button
+            type="button"
+            className={`nav-btn ${currentPage === PAGE_COLLECTIONS ? 'active' : ''}`}
+            onClick={goToCollections}
+          >
+            Zbirke
+          </button>
+          <button
+            type="button"
+            className={`nav-btn ${currentPage === PAGE_PRACTICE ? 'active' : ''}`}
+            onClick={() => openPractice(collectionPreview)}
+          >
+            Vadba
+          </button>
+        </nav>
         <div className="header-actions">
           <button
             className="btn ghost"
             onClick={loadUsersAndModules}
             disabled={isLoadingData}
           >
-            {isLoadingData ? 'Osvežujem...' : 'Osveži podatke'}
+            {isLoadingData ? 'Osvežujem...' : 'Osveži'}
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => setShowAuthModal(true)}
+          >
+            {authUser ? authUser.name : 'Prijava'}
           </button>
         </div>
       </header>
@@ -2098,171 +2239,55 @@ function App() {
         </div>
       )}
 
-      <section className="panel-grid">
-        <div className="panel">
-          <h2>1. Prijava</h2>
-          {isLoadingData && <p className="hint">Nalagam uporabnike in sklope ...</p>}
-          {!authUser && (
-            <p className="hint">Uporabljaš anonimni način (brez shranjevanja napredka).</p>
-          )}
-          <div className="auth-section">
-            <p className="section-title">Prijava</p>
-            {authUser ? (
-              <div className="auth-status">
-                <span>
-                  Prijavljen: <strong>{authUser.name}</strong> (
-                  {USER_LEVEL_LABELS[authUser.level ?? 0] || authUser.level})
-                </span>
-                <button
-                  type="button"
-                  className="btn ghost small"
-                  onClick={handleLogout}
-                  disabled={isAuthBusy}
-                >
-                  Odjava
-                </button>
+      <section className="panel-grid single">
+        {currentPage === PAGE_COLLECTIONS && (
+          <div className="panel">
+            <h2>Zbirke</h2>
+            {activeCollection ? (
+              <div className="collection-active">
+                <div className="collection-meta-row">
+                  <strong>{activeCollection.collectionTitle}</strong>
+                  {activeCollection.collectionDescription && (
+                    <span className="collection-description-inline">
+                      — {activeCollection.collectionDescription}
+                    </span>
+                  )}
+                </div>
+                <div className="collection-meta-row">
+                  <span className="pill-meta">v{activeCollection.versionNumber}</span>
+                  {activeCollection.versionTitle && (
+                    <span className="pill-meta">{activeCollection.versionTitle}</span>
+                  )}
+                  {activeCollection.versionDescription && (
+                    <span className="collection-description-inline">
+                      — {activeCollection.versionDescription}
+                    </span>
+                  )}
+                </div>
+                {activeCollection.ownerName && (
+                  <div className="collection-meta-row">
+                    <span className="pill-meta">Avtor</span>
+                    <span className="collection-description-inline">
+                      — {activeCollection.ownerName}
+                    </span>
+                  </div>
+                )}
+                {activeCollection.accessCode && (
+                  <span className="pill-meta">Koda: {activeCollection.accessCode}</span>
+                )}
+                <div className="collection-actions">
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    onClick={openActiveCollectionDetail}
+                  >
+                    Podrobnosti zbirke
+                  </button>
+                </div>
               </div>
             ) : (
-              <form className="auth-form" onSubmit={handleLogin}>
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={authEmail}
-                  onChange={(event) => setAuthEmail(event.target.value)}
-                />
-                <input
-                  type="password"
-                  placeholder="Geslo"
-                  value={authPassword}
-                  onChange={(event) => setAuthPassword(event.target.value)}
-                />
-                <button type="submit" className="btn primary small" disabled={isAuthBusy}>
-                  Prijava
-                </button>
-              </form>
+              <p className="hint">Ni izbrane zbirke (uporabljaš osnovni nabor).</p>
             )}
-            {sessionLevel >= ADMIN_LEVEL && authUser && (
-              <form className="auth-form" onSubmit={handleCreateLocalUser}>
-                <input
-                  type="text"
-                  placeholder="Ime"
-                  value={localUserForm.name}
-                  onChange={(event) =>
-                    setLocalUserForm((prev) => ({ ...prev, name: event.target.value }))
-                  }
-                />
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={localUserForm.email}
-                  onChange={(event) =>
-                    setLocalUserForm((prev) => ({ ...prev, email: event.target.value }))
-                  }
-                />
-                <input
-                  type="password"
-                  placeholder="Geslo"
-                  value={localUserForm.password}
-                  onChange={(event) =>
-                    setLocalUserForm((prev) => ({ ...prev, password: event.target.value }))
-                  }
-                />
-                <button type="submit" className="btn secondary small" disabled={isAuthBusy}>
-                  Ustvari uporabnika
-                </button>
-              </form>
-            )}
-          </div>
-          {canAssignLevels && (
-            <div className="admin-users">
-              <p className="section-title">Uporabniki</p>
-              {users.length === 0 ? (
-                <p className="hint">Ni ustvarjenih uporabnikov.</p>
-              ) : (
-                <div className="pill-list">
-                  {users.map((user) => (
-                    <div key={user.id} className="pill">
-                      <div className="user-pill-main">
-                        <span className="user-name">{user.name}</span>
-                        <span className="pill-meta">ID: {user.id}</span>
-                        <span className="pill-meta">
-                          Nivo: {USER_LEVEL_LABELS[user.level ?? 0] || user.level}
-                        </span>
-                      </div>
-                      <label className="user-level-select">
-                        <span className="pill-meta">Nastavi nivo</span>
-                        <select
-                          value={user.level ?? 0}
-                          onChange={(event) =>
-                            updateUserLevel(user.id, Number(event.target.value))
-                          }
-                          disabled={isUpdatingUserLevel || user.id === authUser?.id}
-                        >
-                          {USER_LEVEL_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        className="remove-btn"
-                        onClick={() => handleDeleteUser(user.id)}
-                        disabled={isBusy || user.id === authUser?.id}
-                        aria-label={`Izbriši uporabnika ${user.name}`}
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="panel">
-          <h2>2. Zbirke</h2>
-          {activeCollection ? (
-            <div className="collection-active">
-              <div className="collection-meta-row">
-                <strong>{activeCollection.collectionTitle}</strong>
-                {activeCollection.collectionDescription && (
-                  <span className="collection-description-inline">
-                    — {activeCollection.collectionDescription}
-                  </span>
-                )}
-              </div>
-              <div className="collection-meta-row">
-                <span className="pill-meta">v{activeCollection.versionNumber}</span>
-                {activeCollection.versionTitle && (
-                  <span className="pill-meta">Verzija: {activeCollection.versionTitle}</span>
-                )}
-                {activeCollection.versionDescription && (
-                  <span className="collection-description-inline">
-                    — {activeCollection.versionDescription}
-                  </span>
-                )}
-              </div>
-              {activeCollection.ownerName && (
-                <div className="collection-meta-row">
-                  <span className="pill-meta">Avtor</span>
-                  <span className="collection-description-inline">
-                    — {activeCollection.ownerName}
-                  </span>
-                </div>
-              )}
-              {activeCollection.accessCode && (
-                <span className="pill-meta">Koda: {activeCollection.accessCode}</span>
-              )}
-              <button type="button" className="btn ghost small" onClick={clearActiveCollection}>
-                Zapri zbirko
-              </button>
-            </div>
-          ) : (
-            <p className="hint">Ni izbrane zbirke (uporabljaš osnovni nabor).</p>
-          )}
 
           <div className="inline-form">
             <input
@@ -2325,7 +2350,7 @@ function App() {
                         <button
                           type="button"
                           className="btn secondary small"
-                          onClick={() => activateCollection(item)}
+                          onClick={() => openCollectionDetail(item)}
                           disabled={collectionBusy}
                         >
                           Odpri
@@ -2392,6 +2417,18 @@ function App() {
                         >
                           Uredi zbirko
                         </button>
+                        {canAssignLevels && (
+                          <button
+                            type="button"
+                            className="btn warning small"
+                            onClick={() =>
+                              handleDeleteCollection(entry.collection.id, entry.collection.title)
+                            }
+                            disabled={collectionBusy}
+                          >
+                            Izbriši
+                          </button>
+                        )}
                       </div>
                       {collectionEdit.id === entry.collection.id && (
                         <div className="collection-meta-edit">
@@ -2470,7 +2507,7 @@ function App() {
                               <button
                                 type="button"
                                 className="btn secondary small"
-                                onClick={() => activateOwnerVersion(entry.collection, version)}
+                                onClick={() => openOwnerCollectionDetail(entry.collection, version)}
                                 disabled={collectionBusy}
                               >
                                 Odpri
@@ -2729,10 +2766,114 @@ function App() {
             </p>
           )}
         </div>
+        )}
 
-        <div className="panel">
-          <h2>3. Izberi sklop</h2>
-          <div className="pill-list">
+        {currentPage === PAGE_COLLECTION && (
+          <div className="panel">
+            <h2>Podrobnosti zbirke</h2>
+            {collectionView ? (
+              <div className="collection-active">
+                <div className="collection-meta-row">
+                  <strong>{collectionView.title}</strong>
+                  {collectionView.description && (
+                    <span className="collection-description-inline">
+                      — {collectionView.description}
+                    </span>
+                  )}
+                </div>
+                <div className="collection-meta-row">
+                  <span className="pill-meta">v{collectionView.versionNumber}</span>
+                  {collectionView.versionTitle && (
+                    <span className="pill-meta">{collectionView.versionTitle}</span>
+                  )}
+                  {collectionView.versionDescription && (
+                    <span className="collection-description-inline">
+                      — {collectionView.versionDescription}
+                    </span>
+                  )}
+                </div>
+                {collectionView.ownerName && (
+                  <div className="collection-meta-row">
+                    <span className="pill-meta">Avtor</span>
+                    <span className="collection-description-inline">
+                      — {collectionView.ownerName}
+                    </span>
+                  </div>
+                )}
+                {collectionView.accessCode && (
+                  <span className="pill-meta">Koda: {collectionView.accessCode}</span>
+                )}
+                <div className="collection-actions">
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    onClick={goToCollections}
+                  >
+                    Nazaj na katalog
+                  </button>
+                  <button
+                    type="button"
+                    className="btn primary small"
+                    onClick={() => openPractice(collectionView.payload)}
+                  >
+                    {activeCollectionId === collectionView.versionId
+                      ? 'Nadaljuj vadbo'
+                      : 'Začni vaditi'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="hint">Ni izbrane zbirke.</p>
+            )}
+          </div>
+        )}
+
+        {currentPage === PAGE_PRACTICE && (
+          <div className="panel">
+            <h2>Vadba</h2>
+            {activeCollection ? (
+              <div className="collection-active">
+                <div className="collection-meta-row">
+                  <strong>{activeCollection.collectionTitle}</strong>
+                  {activeCollection.collectionDescription && (
+                    <span className="collection-description-inline">
+                      — {activeCollection.collectionDescription}
+                    </span>
+                  )}
+                </div>
+                <div className="collection-meta-row">
+                  <span className="pill-meta">v{activeCollection.versionNumber}</span>
+                  {activeCollection.versionTitle && (
+                    <span className="pill-meta">{activeCollection.versionTitle}</span>
+                  )}
+                  {activeCollection.versionDescription && (
+                    <span className="collection-description-inline">
+                      — {activeCollection.versionDescription}
+                    </span>
+                  )}
+                </div>
+                {activeCollection.ownerName && (
+                  <div className="collection-meta-row">
+                    <span className="pill-meta">Avtor</span>
+                    <span className="collection-description-inline">
+                      — {activeCollection.ownerName}
+                    </span>
+                  </div>
+                )}
+                <div className="collection-actions">
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    onClick={openActiveCollectionDetail}
+                  >
+                    Podrobnosti zbirke
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="hint">Najprej izberi zbirko.</p>
+            )}
+            <div className="pill-list">
             {modules.map((module) => {
               const isNumberModule = module.type === 'number'
               const isFamilyModule = module.type === 'family'
@@ -3341,7 +3482,157 @@ function App() {
             </div>
           )}
         </div>
+        )}
       </section>
+
+      {showAuthModal && (
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target.classList.contains('modal-backdrop')) {
+              setShowAuthModal(false)
+            }
+          }}
+        >
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Prijava</h3>
+              <button
+                type="button"
+                className="close-modal"
+                onClick={() => setShowAuthModal(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              {!authUser && (
+                <form className="auth-form" onSubmit={handleLogin}>
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={authEmail}
+                    onChange={(event) => setAuthEmail(event.target.value)}
+                  />
+                  <input
+                    type="password"
+                    placeholder="Geslo"
+                    value={authPassword}
+                    onChange={(event) => setAuthPassword(event.target.value)}
+                  />
+                  <button type="submit" className="btn primary small" disabled={isAuthBusy}>
+                    {isAuthBusy ? 'Prijavljam...' : 'Prijava'}
+                  </button>
+                </form>
+              )}
+              {authUser && (
+                <div className="auth-section">
+                  <div className="auth-status">
+                    <span>
+                      Prijavljen kot <strong>{authUser.name}</strong>
+                    </span>
+                    <span className="pill-meta">
+                      {USER_LEVEL_LABELS[authUser.level ?? 0]}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={handleLogout}
+                      disabled={isAuthBusy}
+                    >
+                      Odjava
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {canAssignLevels && (
+                <div className="auth-section">
+                  <h4>Dodaj uporabnika</h4>
+                  <form className="auth-form" onSubmit={handleCreateLocalUser}>
+                    <input
+                      type="text"
+                      placeholder="Ime"
+                      value={localUserForm.name}
+                      onChange={(event) =>
+                        setLocalUserForm((prev) => ({ ...prev, name: event.target.value }))
+                      }
+                    />
+                    <input
+                      type="email"
+                      placeholder="Email"
+                      value={localUserForm.email}
+                      onChange={(event) =>
+                        setLocalUserForm((prev) => ({ ...prev, email: event.target.value }))
+                      }
+                    />
+                    <input
+                      type="password"
+                      placeholder="Geslo"
+                      value={localUserForm.password}
+                      onChange={(event) =>
+                        setLocalUserForm((prev) => ({ ...prev, password: event.target.value }))
+                      }
+                    />
+                    <button type="submit" className="btn secondary small" disabled={isAuthBusy}>
+                      Ustvari
+                    </button>
+                  </form>
+                </div>
+              )}
+
+              {canAssignLevels && (
+                <div className="admin-users">
+                  <h4>Uporabniki</h4>
+                  {users.length === 0 ? (
+                    <p className="hint">Ni uporabnikov.</p>
+                  ) : (
+                    users.map((user) => (
+                      <div key={user.id} className="pill">
+                        <div className="user-pill-main">
+                          <div className="user-name">
+                            <strong>{user.name}</strong>
+                            {user.email && <span className="pill-meta">{user.email}</span>}
+                          </div>
+                          <span className="pill-meta">
+                            {USER_LEVEL_LABELS[user.level ?? 0]}
+                          </span>
+                        </div>
+                        <div className="user-level-select">
+                          <span className="pill-meta">Nivo</span>
+                          <select
+                            value={user.level ?? 0}
+                            onChange={(event) =>
+                              updateUserLevel(user.id, Number(event.target.value))
+                            }
+                            disabled={isUpdatingUserLevel}
+                          >
+                            {USER_LEVEL_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {user.name !== 'admin' && (
+                          <button
+                            type="button"
+                            className="remove-btn"
+                            onClick={() => handleDeleteUser(user.id)}
+                            disabled={isBusy}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {cycle && (
         <div className="modal-backdrop question-backdrop">

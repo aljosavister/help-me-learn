@@ -1057,6 +1057,22 @@ def update_collection(
     )
 
 
+@app.delete("/collections/{collection_id}")
+def delete_collection(
+    collection_id: int,
+    authorization: Optional[str] = Header(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> None:
+    session_user = _require_session(conn, authorization)
+    ensure_admin(conn, session_user["id"])
+    row = conn.execute("SELECT id FROM collections WHERE id = ?", (collection_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Zbirka ne obstaja.")
+    conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+    conn.commit()
+    return {"status": "deleted"}
+
+
 @app.get("/collections/public", response_model=List[CollectionPublicOut])
 def list_public_collections(conn: sqlite3.Connection = Depends(get_db)) -> List[CollectionPublicOut]:
     rows = conn.execute(

@@ -39,6 +39,30 @@ body {
   gap: 0.7rem;
 }
 
+.top-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.nav-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: inherit;
+  border-radius: 999px;
+  padding: 0.45rem 1rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nav-btn:hover,
+.nav-btn.active {
+  border-color: rgba(168, 181, 255, 0.6);
+  background: rgba(168, 181, 255, 0.16);
+  color: #e8ecff;
+}
+
 .panel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -46,9 +70,19 @@ body {
   margin-bottom: 2rem;
 }
 
+.panel-grid.single {
+  grid-template-columns: minmax(280px, 1fr);
+}
+
 @media (min-width: 1100px) {
   .panel-grid {
     grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.4fr) minmax(360px, 1.4fr);
+  }
+}
+
+@media (min-width: 1100px) {
+  .panel-grid.single {
+    grid-template-columns: minmax(320px, 1fr);
   }
 }
 
