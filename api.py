@@ -290,6 +290,38 @@ def _version_row_to_out(row: sqlite3.Row) -> CollectionVersionOut:
     )
 
 
+def _validate_item_ids(
+    conn: sqlite3.Connection, word_type: str, item_ids: Optional[List[int]]
+) -> List[int]:
+    if not item_ids:
+        return []
+    unique_ids = list(dict.fromkeys(int(item_id) for item_id in item_ids))
+    placeholders = ", ".join("?" * len(unique_ids))
+    rows = conn.execute(
+        f"SELECT id FROM items WHERE type = ? AND id IN ({placeholders})",
+        tuple([word_type] + unique_ids),
+    ).fetchall()
+    if len(rows) != len(unique_ids):
+        raise HTTPException(status_code=400, detail="Izbran seznam vsebuje neveljavne vnose.")
+    return unique_ids
+
+
+def _fetch_version_item_ids(
+    conn: sqlite3.Connection, version_id: int, word_type: str
+) -> List[int]:
+    rows = conn.execute(
+        """
+        SELECT i.id
+        FROM collection_version_items cvi
+        JOIN items i ON i.id = cvi.item_id
+        WHERE cvi.collection_version_id = ? AND i.type = ?
+        ORDER BY i.id
+        """,
+        (version_id, word_type),
+    ).fetchall()
+    return [row["id"] for row in rows]
+
+
 class UserCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
 
@@ -415,6 +447,12 @@ class CollectionCreate(BaseModel):
     description: str = ""
 
 
+class CollectionUpdate(BaseModel):
+    owner_user_id: int
+    title: Optional[str] = None
+    description: Optional[str] = None
+
+
 class CollectionOut(BaseModel):
     id: int
     owner_user_id: int
@@ -430,6 +468,8 @@ class CollectionVersionCreate(BaseModel):
     description: str = ""
     visibility: CollectionVisibility = "draft"
     config: Dict[str, object] = Field(default_factory=dict)
+    noun_item_ids: Optional[List[int]] = None
+    verb_item_ids: Optional[List[int]] = None
 
 
 class CollectionVersionUpdate(BaseModel):
@@ -437,6 +477,9 @@ class CollectionVersionUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     visibility: Optional[CollectionVisibility] = None
+    config: Optional[Dict[str, object]] = None
+    noun_item_ids: Optional[List[int]] = None
+    verb_item_ids: Optional[List[int]] = None
 
 
 class CollectionVersionOut(BaseModel):
@@ -469,6 +512,11 @@ class CollectionPublicOut(BaseModel):
     access_code: Optional[str]
     visibility: CollectionVisibility
     config: Dict[str, object]
+
+
+class CollectionVersionItemsOut(BaseModel):
+    noun_item_ids: List[int]
+    verb_item_ids: List[int]
 
 
 @app.get("/")
@@ -576,6 +624,72 @@ def list_owner_collections(
     return output
 
 
+@app.patch("/collections/{collection_id}", response_model=CollectionOut)
+def update_collection(
+    collection_id: int,
+    payload: CollectionUpdate,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> CollectionOut:
+    ensure_user(conn, payload.owner_user_id)
+    row = conn.execute(
+        """
+        SELECT id, owner_user_id, title, description, created_at, updated_at
+        FROM collections
+        WHERE id = ?
+        """,
+        (collection_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Zbirka ne obstaja.")
+    if row["owner_user_id"] != payload.owner_user_id:
+        raise HTTPException(status_code=403, detail="Nimaš pravic za urejanje zbirke.")
+    fields: List[str] = []
+    params: List[object] = []
+    if payload.title is not None:
+        title = payload.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Naziv zbirke ne sme biti prazen.")
+        fields.append("title = ?")
+        params.append(title)
+    if payload.description is not None:
+        fields.append("description = ?")
+        params.append(payload.description.strip())
+    if not fields:
+        return CollectionOut(
+            id=row["id"],
+            owner_user_id=row["owner_user_id"],
+            title=row["title"],
+            description=row["description"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+    now = learn.now_iso()
+    fields.append("updated_at = ?")
+    params.append(now)
+    params.append(collection_id)
+    conn.execute(
+        f"UPDATE collections SET {', '.join(fields)} WHERE id = ?",
+        tuple(params),
+    )
+    conn.commit()
+    refreshed = conn.execute(
+        """
+        SELECT id, owner_user_id, title, description, created_at, updated_at
+        FROM collections
+        WHERE id = ?
+        """,
+        (collection_id,),
+    ).fetchone()
+    return CollectionOut(
+        id=refreshed["id"],
+        owner_user_id=refreshed["owner_user_id"],
+        title=refreshed["title"],
+        description=refreshed["description"],
+        created_at=refreshed["created_at"],
+        updated_at=refreshed["updated_at"],
+    )
+
+
 @app.get("/collections/public", response_model=List[CollectionPublicOut])
 def list_public_collections(conn: sqlite3.Connection = Depends(get_db)) -> List[CollectionPublicOut]:
     rows = conn.execute(
@@ -634,6 +748,24 @@ def get_collection_version(
     row = _fetch_collection_version(conn, version_id)
     _ensure_collection_access(row, viewer_user_id)
     return _version_row_to_out(row)
+
+
+@app.get("/collections/versions/{version_id}/items", response_model=CollectionVersionItemsOut)
+def get_collection_version_items(
+    version_id: int,
+    owner_user_id: int = Query(...),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> CollectionVersionItemsOut:
+    ensure_user(conn, owner_user_id)
+    row = _fetch_collection_version(conn, version_id)
+    if row["owner_user_id"] != owner_user_id:
+        raise HTTPException(status_code=403, detail="Nimaš pravic za urejanje zbirke.")
+    noun_item_ids = _fetch_version_item_ids(conn, version_id, "noun")
+    verb_item_ids = _fetch_version_item_ids(conn, version_id, "verb")
+    return CollectionVersionItemsOut(
+        noun_item_ids=noun_item_ids,
+        verb_item_ids=verb_item_ids,
+    )
 
 
 @app.get("/collections/code/{access_code}", response_model=CollectionPublicOut)
@@ -696,6 +828,23 @@ def create_collection_version(
     if collection["owner_user_id"] != payload.owner_user_id:
         raise HTTPException(status_code=403, detail="Nimaš pravic za urejanje zbirke.")
     normalized_config = _normalize_collection_config(payload.config)
+    modules = normalized_config.get("modules", [])
+    noun_scope = normalized_config.get("noun", {}).get("scope", "all")
+    verb_scope = normalized_config.get("verb", {}).get("scope", "all")
+    if "noun" not in modules and payload.noun_item_ids:
+        raise HTTPException(status_code=400, detail="Samostalniki niso del zbirke.")
+    if "verb" not in modules and payload.verb_item_ids:
+        raise HTTPException(status_code=400, detail="Glagoli niso del zbirke.")
+    noun_item_ids = _validate_item_ids(conn, "noun", payload.noun_item_ids)
+    verb_item_ids = _validate_item_ids(conn, "verb", payload.verb_item_ids)
+    if "noun" in modules and noun_scope == "subset" and not noun_item_ids:
+        raise HTTPException(status_code=400, detail="Izberi vsaj en samostalnik.")
+    if "verb" in modules and verb_scope == "subset" and not verb_item_ids:
+        raise HTTPException(status_code=400, detail="Izberi vsaj en glagol.")
+    if "noun" in modules and noun_scope != "subset" and noun_item_ids:
+        raise HTTPException(status_code=400, detail="Samostalniki so nastavljeni na 'vsi'.")
+    if "verb" in modules and verb_scope != "subset" and verb_item_ids:
+        raise HTTPException(status_code=400, detail="Glagoli so nastavljeni na 'vsi'.")
     version_row = conn.execute(
         "SELECT COALESCE(MAX(version_number), 0) AS v FROM collection_versions WHERE collection_id = ?",
         (collection_id,),
@@ -737,6 +886,16 @@ def create_collection_version(
         "UPDATE collections SET updated_at = ? WHERE id = ?",
         (now, collection_id),
     )
+    if noun_item_ids:
+        conn.executemany(
+            "INSERT INTO collection_version_items (collection_version_id, item_id) VALUES (?, ?)",
+            [(cur.lastrowid, item_id) for item_id in noun_item_ids],
+        )
+    if verb_item_ids:
+        conn.executemany(
+            "INSERT INTO collection_version_items (collection_version_id, item_id) VALUES (?, ?)",
+            [(cur.lastrowid, item_id) for item_id in verb_item_ids],
+        )
     conn.commit()
     version_id = int(cur.lastrowid)
     row = conn.execute(
@@ -770,6 +929,38 @@ def update_collection_version(
     row = _fetch_collection_version(conn, version_id)
     if row["owner_user_id"] != payload.owner_user_id:
         raise HTTPException(status_code=403, detail="Nimaš pravic za urejanje zbirke.")
+    current_config = _normalize_collection_config(
+        json.loads(row["config_json"]) if row["config_json"] else {}
+    )
+    config = current_config
+    if payload.config is not None:
+        config = _normalize_collection_config(payload.config)
+    modules = config.get("modules", [])
+    noun_scope = config.get("noun", {}).get("scope", "all")
+    verb_scope = config.get("verb", {}).get("scope", "all")
+    noun_item_ids: Optional[List[int]] = None
+    verb_item_ids: Optional[List[int]] = None
+    if payload.noun_item_ids is not None:
+        if "noun" not in modules:
+            raise HTTPException(status_code=400, detail="Samostalniki niso del zbirke.")
+        if noun_scope != "subset":
+            raise HTTPException(status_code=400, detail="Samostalniki so nastavljeni na 'vsi'.")
+        noun_item_ids = _validate_item_ids(conn, "noun", payload.noun_item_ids)
+        if not noun_item_ids:
+            raise HTTPException(status_code=400, detail="Izberi vsaj en samostalnik.")
+    elif payload.config is not None and "noun" in modules and noun_scope == "subset":
+        raise HTTPException(status_code=400, detail="Izberi vsaj en samostalnik.")
+    if payload.verb_item_ids is not None:
+        if "verb" not in modules:
+            raise HTTPException(status_code=400, detail="Glagoli niso del zbirke.")
+        if verb_scope != "subset":
+            raise HTTPException(status_code=400, detail="Glagoli so nastavljeni na 'vsi'.")
+        verb_item_ids = _validate_item_ids(conn, "verb", payload.verb_item_ids)
+        if not verb_item_ids:
+            raise HTTPException(status_code=400, detail="Izberi vsaj en glagol.")
+    elif payload.config is not None and "verb" in modules and verb_scope == "subset":
+        raise HTTPException(status_code=400, detail="Izberi vsaj en glagol.")
+
     fields: List[str] = []
     params: List[object] = []
     if payload.title is not None:
@@ -784,13 +975,64 @@ def update_collection_version(
         if payload.visibility != "draft" and not row["published_at"]:
             fields.append("published_at = ?")
             params.append(learn.now_iso())
-    if not fields:
+    if payload.config is not None:
+        fields.append("config_json = ?")
+        params.append(json.dumps(config))
+    item_updates = noun_item_ids is not None or verb_item_ids is not None
+    if payload.config is not None and (noun_scope == "all" or verb_scope == "all"):
+        item_updates = True
+    if fields:
+        params.append(version_id)
+        conn.execute(
+            f"UPDATE collection_versions SET {', '.join(fields)} WHERE id = ?",
+            tuple(params),
+        )
+    elif not item_updates:
         return _version_row_to_out(row)
-    params.append(version_id)
-    conn.execute(
-        f"UPDATE collection_versions SET {', '.join(fields)} WHERE id = ?",
-        tuple(params),
-    )
+    if payload.config is not None and noun_scope == "all":
+        conn.execute(
+            """
+            DELETE FROM collection_version_items
+            WHERE collection_version_id = ?
+              AND item_id IN (SELECT id FROM items WHERE type = 'noun')
+            """,
+            (version_id,),
+        )
+    if payload.config is not None and verb_scope == "all":
+        conn.execute(
+            """
+            DELETE FROM collection_version_items
+            WHERE collection_version_id = ?
+              AND item_id IN (SELECT id FROM items WHERE type = 'verb')
+            """,
+            (version_id,),
+        )
+    if noun_item_ids is not None:
+        conn.execute(
+            """
+            DELETE FROM collection_version_items
+            WHERE collection_version_id = ?
+              AND item_id IN (SELECT id FROM items WHERE type = 'noun')
+            """,
+            (version_id,),
+        )
+        conn.executemany(
+            "INSERT INTO collection_version_items (collection_version_id, item_id) VALUES (?, ?)",
+            [(version_id, item_id) for item_id in noun_item_ids],
+        )
+    if verb_item_ids is not None:
+        conn.execute(
+            """
+            DELETE FROM collection_version_items
+            WHERE collection_version_id = ?
+              AND item_id IN (SELECT id FROM items WHERE type = 'verb')
+            """,
+            (version_id,),
+        )
+        conn.executemany(
+            "INSERT INTO collection_version_items (collection_version_id, item_id) VALUES (?, ?)",
+            [(version_id, item_id) for item_id in verb_item_ids],
+        )
     conn.execute(
         "UPDATE collections SET updated_at = ? WHERE id = ?",
         (learn.now_iso(), row["collection_id"]),

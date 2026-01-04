@@ -96,10 +96,35 @@ function App() {
   const [newCollection, setNewCollection] = useState({ title: '', description: '' })
   const [versionForm, setVersionForm] = useState({
     collectionId: null,
+    versionId: null,
+    versionNumber: null,
+    mode: 'create',
     title: '',
     description: '',
     visibility: 'draft',
     modules: COLLECTION_MODULES.map((module) => module.key),
+    nounScope: 'all',
+    verbScope: 'all',
+    nounItems: [],
+    verbItems: [],
+    configSnapshot: null,
+  })
+  const [versionEdit, setVersionEdit] = useState({
+    id: null,
+    title: '',
+    description: '',
+  })
+  const [collectionEdit, setCollectionEdit] = useState({
+    id: null,
+    title: '',
+    description: '',
+  })
+  const [selectionModal, setSelectionModal] = useState({
+    open: false,
+    wordType: null,
+    items: [],
+    filter: '',
+    loading: false,
   })
   const [selectedModule, setSelectedModule] = useState(null)
   const [newUserName, setNewUserName] = useState('')
@@ -120,6 +145,7 @@ function App() {
   const [evaluation, setEvaluation] = useState(null)
   const [solutionVisible, setSolutionVisible] = useState(false)
   const [error, setError] = useState('')
+  const [infoMessage, setInfoMessage] = useState('')
   const [isBusy, setIsBusy] = useState(false)
   const [stats, setStats] = useState(null)
   const [isLoadingData, setIsLoadingData] = useState(false)
@@ -494,22 +520,207 @@ function App() {
   const openVersionForm = (collectionId) => {
     setVersionForm({
       collectionId,
+      versionId: null,
+      versionNumber: null,
+      mode: 'create',
       title: '',
       description: '',
       visibility: 'draft',
       modules: COLLECTION_MODULES.map((module) => module.key),
+      nounScope: 'all',
+      verbScope: 'all',
+      nounItems: [],
+      verbItems: [],
+      configSnapshot: null,
     })
   }
 
+  const openEditVersionForm = async (collection, version) => {
+    if (!selectedUser || isAnonymous) return
+    setCollectionBusy(true)
+    setError('')
+    try {
+      const versionData = await apiFetch(
+        `/collections/versions/${version.id}?viewer_user_id=${selectedUser.id}`,
+      )
+      const itemsData = await apiFetch(
+        `/collections/versions/${version.id}/items?owner_user_id=${selectedUser.id}`,
+      )
+      const config = versionData.config || {}
+      setVersionForm({
+        collectionId: collection.id,
+        versionId: version.id,
+        versionNumber: version.version_number,
+        mode: 'edit',
+        title: versionData.title || '',
+        description: versionData.description || '',
+        visibility: versionData.visibility || 'draft',
+        modules: config.modules || COLLECTION_MODULES.map((module) => module.key),
+        nounScope: config.noun?.scope || 'all',
+        verbScope: config.verb?.scope || 'all',
+        nounItems: itemsData.noun_item_ids || [],
+        verbItems: itemsData.verb_item_ids || [],
+        configSnapshot: config,
+      })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollectionBusy(false)
+    }
+  }
+
+  const openVersionMetaEdit = (version) => {
+    setVersionEdit({
+      id: version.id,
+      title: version.title || '',
+      description: version.description || '',
+    })
+  }
+
+  const openCollectionMetaEdit = (collection) => {
+    setCollectionEdit({
+      id: collection.id,
+      title: collection.title || '',
+      description: collection.description || '',
+    })
+  }
+
+  const cancelCollectionMetaEdit = () => {
+    setCollectionEdit({ id: null, title: '', description: '' })
+  }
+
+  const saveCollectionMetaEdit = async () => {
+    if (!selectedUser || isAnonymous || !collectionEdit.id) return
+    setCollectionBusy(true)
+    setError('')
+    try {
+      const updated = await apiFetch(`/collections/${collectionEdit.id}`, {
+        method: 'PATCH',
+        body: {
+          owner_user_id: selectedUser.id,
+          title: collectionEdit.title.trim(),
+          description: collectionEdit.description.trim(),
+        },
+      })
+      setActiveCollection((prev) => {
+        if (!prev || prev.collectionId !== updated.id) return prev
+        const next = {
+          ...prev,
+          collectionTitle: updated.title,
+          collectionDescription: updated.description,
+        }
+        localStorage.setItem(ACTIVE_COLLECTION_STORAGE_KEY, JSON.stringify(next))
+        return next
+      })
+      cancelCollectionMetaEdit()
+      await loadOwnerCollections(selectedUser.id)
+      await loadPublicCollections()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollectionBusy(false)
+    }
+  }
+
+  const syncActiveCollectionVersion = (versionId, updates) => {
+    const shouldApply = Boolean(
+      updates?.config && activeCollection && activeCollection.versionId === versionId,
+    )
+    setActiveCollection((prev) => {
+      if (!prev || prev.versionId !== versionId) return prev
+      const next = { ...prev, ...updates }
+      localStorage.setItem(ACTIVE_COLLECTION_STORAGE_KEY, JSON.stringify(next))
+      return next
+    })
+    if (shouldApply) {
+      applyCollectionConfig(updates.config)
+      refreshModules(versionId)
+      if (cycle) {
+        resetCycleState()
+        setStats(null)
+        setInfoMessage('Cikel zaprt zaradi spremembe konfiguracije zbirke.')
+      }
+    }
+  }
+
+  const cancelVersionMetaEdit = () => {
+    setVersionEdit({ id: null, title: '', description: '' })
+  }
+
+  const saveVersionMetaEdit = async () => {
+    if (!selectedUser || isAnonymous || !versionEdit.id) return
+    setCollectionBusy(true)
+    setError('')
+    try {
+      await apiFetch(`/collections/versions/${versionEdit.id}`, {
+        method: 'PATCH',
+        body: {
+          owner_user_id: selectedUser.id,
+          title: versionEdit.title.trim(),
+          description: versionEdit.description.trim(),
+        },
+      })
+      syncActiveCollectionVersion(versionEdit.id, {
+        versionTitle: versionEdit.title.trim(),
+        versionDescription: versionEdit.description.trim(),
+      })
+      cancelVersionMetaEdit()
+      await loadOwnerCollections(selectedUser.id)
+      await loadPublicCollections()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollectionBusy(false)
+    }
+  }
+
+  const handleQuickVisibilityChange = async (versionId, nextVisibility, currentVisibility) => {
+    if (!selectedUser || isAnonymous) return
+    if (nextVisibility === currentVisibility) return
+    setCollectionBusy(true)
+    setError('')
+    try {
+      await apiFetch(`/collections/versions/${versionId}`, {
+        method: 'PATCH',
+        body: {
+          owner_user_id: selectedUser.id,
+          visibility: nextVisibility,
+        },
+      })
+      syncActiveCollectionVersion(versionId, { visibility: nextVisibility })
+      await loadOwnerCollections(selectedUser.id)
+      await loadPublicCollections()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollectionBusy(false)
+    }
+  }
+
   const closeVersionForm = () => {
-    setVersionForm((prev) => ({ ...prev, collectionId: null }))
+    setVersionForm((prev) => ({
+      ...prev,
+      collectionId: null,
+      versionId: null,
+      versionNumber: null,
+      mode: 'create',
+    }))
   }
 
   const toggleVersionModule = (key) => {
     setVersionForm((prev) => {
       const exists = prev.modules.includes(key)
       const modules = exists ? prev.modules.filter((item) => item !== key) : [...prev.modules, key]
-      return { ...prev, modules }
+      const next = { ...prev, modules }
+      if (!modules.includes('noun')) {
+        next.nounScope = 'all'
+        next.nounItems = []
+      }
+      if (!modules.includes('verb')) {
+        next.verbScope = 'all'
+        next.verbItems = []
+      }
+      return next
     })
   }
 
@@ -521,12 +732,23 @@ function App() {
     }
     const config = { modules }
     if (modules.includes('noun')) {
-      config.noun = { scope: 'all' }
+      if (versionForm.nounScope === 'subset' && versionForm.nounItems.length === 0) {
+        setError('Izberi vsaj en samostalnik.')
+        return null
+      }
+      config.noun = { scope: versionForm.nounScope }
     }
     if (modules.includes('verb')) {
-      config.verb = { scope: 'all' }
+      if (versionForm.verbScope === 'subset' && versionForm.verbItems.length === 0) {
+        setError('Izberi vsaj en glagol.')
+        return null
+      }
+      config.verb = { scope: versionForm.verbScope }
     }
     if (modules.includes('number')) {
+      if (versionForm.mode === 'edit' && versionForm.configSnapshot?.number) {
+        config.number = versionForm.configSnapshot.number
+      } else {
       const trimmedMax = numberMax.trim()
       if (!trimmedMax) {
         setError('Vnesi največjo številko za števila.')
@@ -557,8 +779,12 @@ function App() {
         use_components: useNumberComponents,
         components: useNumberComponents ? selectedNumberComponents : null,
       }
+      }
     }
     if (modules.includes('family')) {
+      if (versionForm.mode === 'edit' && versionForm.configSnapshot?.family) {
+        config.family = versionForm.configSnapshot.family
+      } else {
       if (familyLevels.length === 0) {
         setError('Izberi vsaj eno stopnjo za družino.')
         return null
@@ -578,8 +804,83 @@ function App() {
         cases: effectiveCases,
         include_plural: familyIncludePlural,
       }
+      }
     }
     return config
+  }
+
+  const openItemSelection = async (wordType) => {
+    if (!wordType) return
+    setSelectionModal({
+      open: true,
+      wordType,
+      items: [],
+      filter: '',
+      loading: true,
+    })
+    setError('')
+    try {
+      const data = await apiFetch(`/items?word_type=${wordType}&include_solution=true`)
+      const selectedIds = wordType === 'noun' ? versionForm.nounItems : versionForm.verbItems
+      const selectedSet = new Set(selectedIds)
+      const items = data.map((item) => ({
+        ...item,
+        selected: selectedSet.has(item.id),
+      }))
+      setSelectionModal({
+        open: true,
+        wordType,
+        items,
+        filter: '',
+        loading: false,
+      })
+    } catch (err) {
+      setError(err.message)
+      setSelectionModal((prev) => ({ ...prev, loading: false }))
+    }
+  }
+
+  const closeSelectionModal = () => {
+    setSelectionModal({ open: false, wordType: null, items: [], filter: '', loading: false })
+  }
+
+  const toggleSelectionItem = (itemId) => {
+    setSelectionModal((prev) => ({
+      ...prev,
+      items: prev.items.map((item) =>
+        item.id === itemId ? { ...item, selected: !item.selected } : item,
+      ),
+    }))
+  }
+
+  const selectAllSelectionItems = () => {
+    setSelectionModal((prev) => ({
+      ...prev,
+      items: prev.items.map((item) => ({ ...item, selected: true })),
+    }))
+  }
+
+  const clearSelectionItems = () => {
+    setSelectionModal((prev) => ({
+      ...prev,
+      items: prev.items.map((item) => ({ ...item, selected: false })),
+    }))
+  }
+
+  const saveSelectionItems = () => {
+    const selectedIds = selectionModal.items
+      .filter((item) => item.selected)
+      .map((item) => item.id)
+    setVersionForm((prev) => {
+      if (selectionModal.wordType === 'noun') {
+        return { ...prev, nounItems: selectedIds }
+      }
+      if (selectionModal.wordType === 'verb') {
+        return { ...prev, verbItems: selectedIds }
+      }
+      return prev
+    })
+    closeSelectionModal()
   }
 
   const handleCreateVersion = async (event) => {
@@ -595,16 +896,43 @@ function App() {
     setCollectionBusy(true)
     setError('')
     try {
-      await apiFetch(`/collections/${versionForm.collectionId}/versions`, {
-        method: 'POST',
-        body: {
-          owner_user_id: selectedUser.id,
-          title: versionForm.title.trim() || null,
-          description: versionForm.description.trim(),
+      if (versionForm.mode === 'edit' && versionForm.versionId) {
+        await apiFetch(`/collections/versions/${versionForm.versionId}`, {
+          method: 'PATCH',
+          body: {
+            owner_user_id: selectedUser.id,
+            title: versionForm.title.trim() || null,
+            description: versionForm.description.trim(),
+            visibility: versionForm.visibility,
+            config,
+            noun_item_ids:
+              versionForm.nounScope === 'subset' ? versionForm.nounItems : undefined,
+            verb_item_ids:
+              versionForm.verbScope === 'subset' ? versionForm.verbItems : undefined,
+          },
+        })
+        syncActiveCollectionVersion(versionForm.versionId, {
+          versionTitle: versionForm.title.trim(),
+          versionDescription: versionForm.description.trim(),
           visibility: versionForm.visibility,
           config,
-        },
-      })
+        })
+      } else {
+        await apiFetch(`/collections/${versionForm.collectionId}/versions`, {
+          method: 'POST',
+          body: {
+            owner_user_id: selectedUser.id,
+            title: versionForm.title.trim() || null,
+            description: versionForm.description.trim(),
+            visibility: versionForm.visibility,
+            config,
+            noun_item_ids:
+              versionForm.nounScope === 'subset' ? versionForm.nounItems : undefined,
+            verb_item_ids:
+              versionForm.verbScope === 'subset' ? versionForm.verbItems : undefined,
+          },
+        })
+      }
       closeVersionForm()
       await loadOwnerCollections(selectedUser.id)
       await loadPublicCollections()
@@ -1295,6 +1623,22 @@ function App() {
     })
   }, [resultsItems, resultsFilter])
 
+  const filteredSelectionItems = useMemo(() => {
+    if (!selectionModal.filter.trim()) return selectionModal.items
+    const q = selectionModal.filter.toLowerCase()
+    return selectionModal.items.filter((item) => {
+      const haystack = [item.translation || '', ...(item.solution || [])]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(q)
+    })
+  }, [selectionModal.items, selectionModal.filter])
+
+  const selectionCount = useMemo(
+    () => selectionModal.items.filter((item) => item.selected).length,
+    [selectionModal.items],
+  )
+
   const hasWrongResults = useMemo(
     () => filteredResultsItems.some((item) => (item.wrong || 0) > 0),
     [filteredResultsItems],
@@ -1491,6 +1835,14 @@ function App() {
       </header>
 
       {error && <div className="alert danger">{error}</div>}
+      {infoMessage && (
+        <div className="alert info">
+          {infoMessage}
+          <button type="button" className="close-alert" onClick={() => setInfoMessage('')}>
+            ×
+          </button>
+        </div>
+      )}
 
       <section className="panel-grid">
         <div className="panel">
@@ -1568,20 +1920,32 @@ function App() {
           <h2>2. Zbirke</h2>
           {activeCollection ? (
             <div className="collection-active">
-              <div>
-                <strong>{activeCollection.collectionTitle}</strong>{' '}
+              <div className="collection-meta-row">
+                <strong>{activeCollection.collectionTitle}</strong>
+                {activeCollection.collectionDescription && (
+                  <span className="collection-description-inline">
+                    — {activeCollection.collectionDescription}
+                  </span>
+                )}
+              </div>
+              <div className="collection-meta-row">
                 <span className="pill-meta">v{activeCollection.versionNumber}</span>
+                {activeCollection.versionTitle && (
+                  <span className="pill-meta">Verzija: {activeCollection.versionTitle}</span>
+                )}
+                {activeCollection.versionDescription && (
+                  <span className="collection-description-inline">
+                    — {activeCollection.versionDescription}
+                  </span>
+                )}
               </div>
               {activeCollection.ownerName && (
-                <span className="pill-meta">Avtor: {activeCollection.ownerName}</span>
-              )}
-              {activeCollection.versionTitle && (
-                <span className="pill-meta">Verzija: {activeCollection.versionTitle}</span>
-              )}
-              {(activeCollection.versionDescription || activeCollection.collectionDescription) && (
-                <span className="hint">
-                  {activeCollection.versionDescription || activeCollection.collectionDescription}
-                </span>
+                <div className="collection-meta-row">
+                  <span className="pill-meta">Avtor</span>
+                  <span className="collection-description-inline">
+                    — {activeCollection.ownerName}
+                  </span>
+                </div>
               )}
               {activeCollection.accessCode && (
                 <span className="pill-meta">Koda: {activeCollection.accessCode}</span>
@@ -1617,33 +1981,53 @@ function App() {
               <p className="hint">Trenutno ni javno objavljenih zbirk.</p>
             ) : (
               <div className="collection-list">
-                {publicCollections.map((item) => (
-                  <div key={item.version_id} className="collection-card">
-                    <div className="collection-card-main">
-                      <strong>{item.title}</strong>{' '}
-                      <span className="pill-meta">v{item.version_number}</span>
-                      {item.version_title && (
-                        <span className="pill-meta">{item.version_title}</span>
-                      )}
-                      <span className="pill-meta">Avtor: {item.owner_name}</span>
-                      {(item.version_description || item.description) && (
-                        <span className="hint">
-                          {item.version_description || item.description}
-                        </span>
-                      )}
+                {publicCollections.map((item) => {
+                  const collectionDescription = (item.description || '').trim()
+                  const versionDescription = (item.version_description || '').trim()
+                  return (
+                    <div key={item.version_id} className="collection-card">
+                      <div className="collection-card-main">
+                        <div className="collection-meta-row">
+                          <strong>{item.title}</strong>
+                          {collectionDescription && (
+                            <span className="collection-description-inline">
+                              — {collectionDescription}
+                            </span>
+                          )}
+                        </div>
+                        <div className="collection-meta-row">
+                          <span className="pill-meta">v{item.version_number}</span>
+                          {item.version_title && (
+                            <span className="pill-meta">{item.version_title}</span>
+                          )}
+                          {versionDescription && (
+                            <span className="collection-description-inline">
+                              — {versionDescription}
+                            </span>
+                          )}
+                        </div>
+                        {item.owner_name && (
+                          <div className="collection-meta-row">
+                            <span className="pill-meta">Avtor</span>
+                            <span className="collection-description-inline">
+                              — {item.owner_name}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="collection-actions">
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          onClick={() => activateCollection(item)}
+                          disabled={collectionBusy}
+                        >
+                          Odpri
+                        </button>
+                      </div>
                     </div>
-                    <div className="collection-actions">
-                      <button
-                        type="button"
-                        className="btn secondary small"
-                        onClick={() => activateCollection(item)}
-                        disabled={collectionBusy}
-                      >
-                        Odpri
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
@@ -1694,7 +2078,59 @@ function App() {
                         >
                           Nova verzija
                         </button>
+                        <button
+                          type="button"
+                          className="btn ghost small"
+                          onClick={() => openCollectionMetaEdit(entry.collection)}
+                          disabled={collectionBusy}
+                        >
+                          Uredi zbirko
+                        </button>
                       </div>
+                      {collectionEdit.id === entry.collection.id && (
+                        <div className="collection-meta-edit">
+                          <input
+                            type="text"
+                            placeholder="Naziv zbirke"
+                            value={collectionEdit.title}
+                            onChange={(event) =>
+                              setCollectionEdit((prev) => ({
+                                ...prev,
+                                title: event.target.value,
+                              }))
+                            }
+                          />
+                          <input
+                            type="text"
+                            placeholder="Opis zbirke"
+                            value={collectionEdit.description}
+                            onChange={(event) =>
+                              setCollectionEdit((prev) => ({
+                                ...prev,
+                                description: event.target.value,
+                              }))
+                            }
+                          />
+                          <div className="collection-meta-actions">
+                            <button
+                              type="button"
+                              className="btn primary small"
+                              onClick={saveCollectionMetaEdit}
+                              disabled={collectionBusy}
+                            >
+                              Shrani opis
+                            </button>
+                            <button
+                              type="button"
+                              className="btn ghost small"
+                              onClick={cancelCollectionMetaEdit}
+                              disabled={collectionBusy}
+                            >
+                              Prekliči
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       <div className="collection-versions">
                         {entry.versions.map((version) => (
                           <div key={version.id} className="collection-version">
@@ -1709,6 +2145,22 @@ function App() {
                               )}
                             </div>
                             <div className="collection-actions">
+                              <select
+                                className="visibility-select"
+                                value={version.visibility}
+                                onChange={(event) =>
+                                  handleQuickVisibilityChange(
+                                    version.id,
+                                    event.target.value,
+                                    version.visibility,
+                                  )
+                                }
+                                disabled={collectionBusy}
+                              >
+                                <option value="draft">Osnutek</option>
+                                <option value="unlisted">Neobjavljeno</option>
+                                <option value="public">Javno</option>
+                              </select>
                               <button
                                 type="button"
                                 className="btn secondary small"
@@ -1717,13 +2169,78 @@ function App() {
                               >
                                 Odpri
                               </button>
+                              <button
+                                type="button"
+                                className="btn ghost small"
+                                onClick={() => openEditVersionForm(entry.collection, version)}
+                                disabled={collectionBusy}
+                              >
+                                Uredi
+                              </button>
+                              <button
+                                type="button"
+                                className="btn ghost small"
+                                onClick={() => openVersionMetaEdit(version)}
+                                disabled={collectionBusy}
+                              >
+                                Opis
+                              </button>
                             </div>
+                            {versionEdit.id === version.id && (
+                              <div className="version-meta-edit">
+                                <input
+                                  type="text"
+                                  placeholder="Naziv verzije"
+                                  value={versionEdit.title}
+                                  onChange={(event) =>
+                                    setVersionEdit((prev) => ({
+                                      ...prev,
+                                      title: event.target.value,
+                                    }))
+                                  }
+                                />
+                                <input
+                                  type="text"
+                                  placeholder="Opis verzije"
+                                  value={versionEdit.description}
+                                  onChange={(event) =>
+                                    setVersionEdit((prev) => ({
+                                      ...prev,
+                                      description: event.target.value,
+                                    }))
+                                  }
+                                />
+                                <div className="version-meta-actions">
+                                  <button
+                                    type="button"
+                                    className="btn primary small"
+                                    onClick={saveVersionMetaEdit}
+                                    disabled={collectionBusy}
+                                  >
+                                    Shrani opis
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn ghost small"
+                                    onClick={cancelVersionMetaEdit}
+                                    disabled={collectionBusy}
+                                  >
+                                    Prekliči
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
 
                       {versionForm.collectionId === entry.collection.id && (
                         <form className="version-form" onSubmit={handleCreateVersion}>
+                          <p className="section-title">
+                            {versionForm.mode === 'edit'
+                              ? `Urejanje verzije${versionForm.versionNumber ? ` v${versionForm.versionNumber}` : ''}`
+                              : 'Nova verzija'}
+                          </p>
                           <input
                             type="text"
                             placeholder="Naziv verzije (neobvezno)"
@@ -1771,8 +2288,110 @@ function App() {
                               </label>
                             ))}
                           </div>
+                          {versionForm.modules.includes('noun') && (
+                            <div className="collection-scope">
+                              <p className="section-title">Samostalniki</p>
+                              <div className="scope-options">
+                                <label className="family-option">
+                                  <input
+                                    type="radio"
+                                    name={`noun-scope-${entry.collection.id}`}
+                                    checked={versionForm.nounScope === 'all'}
+                                    onChange={() =>
+                                      setVersionForm((prev) => ({
+                                        ...prev,
+                                        nounScope: 'all',
+                                        nounItems: [],
+                                      }))
+                                    }
+                                  />
+                                  <span>Vsi samostalniki</span>
+                                </label>
+                                <label className="family-option">
+                                  <input
+                                    type="radio"
+                                    name={`noun-scope-${entry.collection.id}`}
+                                    checked={versionForm.nounScope === 'subset'}
+                                    onChange={() =>
+                                      setVersionForm((prev) => ({
+                                        ...prev,
+                                        nounScope: 'subset',
+                                      }))
+                                    }
+                                  />
+                                  <span>Izbrani samostalniki</span>
+                                </label>
+                              </div>
+                              {versionForm.nounScope === 'subset' && (
+                                <div className="scope-actions">
+                                  <span className="pill-meta">
+                                    Izbranih: {versionForm.nounItems.length}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="btn secondary small"
+                                    onClick={() => openItemSelection('noun')}
+                                  >
+                                    Izberi samostalnike
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {versionForm.modules.includes('verb') && (
+                            <div className="collection-scope">
+                              <p className="section-title">Glagoli</p>
+                              <div className="scope-options">
+                                <label className="family-option">
+                                  <input
+                                    type="radio"
+                                    name={`verb-scope-${entry.collection.id}`}
+                                    checked={versionForm.verbScope === 'all'}
+                                    onChange={() =>
+                                      setVersionForm((prev) => ({
+                                        ...prev,
+                                        verbScope: 'all',
+                                        verbItems: [],
+                                      }))
+                                    }
+                                  />
+                                  <span>Vsi glagoli</span>
+                                </label>
+                                <label className="family-option">
+                                  <input
+                                    type="radio"
+                                    name={`verb-scope-${entry.collection.id}`}
+                                    checked={versionForm.verbScope === 'subset'}
+                                    onChange={() =>
+                                      setVersionForm((prev) => ({
+                                        ...prev,
+                                        verbScope: 'subset',
+                                      }))
+                                    }
+                                  />
+                                  <span>Izbrani glagoli</span>
+                                </label>
+                              </div>
+                              {versionForm.verbScope === 'subset' && (
+                                <div className="scope-actions">
+                                  <span className="pill-meta">
+                                    Izbranih: {versionForm.verbItems.length}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="btn secondary small"
+                                    onClick={() => openItemSelection('verb')}
+                                  >
+                                    Izberi glagole
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <span className="hint">
-                            Nastavitve za števila in družino vzamem iz trenutnih nastavitev.
+                            {versionForm.mode === 'edit'
+                              ? 'Nastavitve za števila in družino ostanejo izbrane iz verzije.'
+                              : 'Nastavitve za števila in družino vzamem iz trenutnih nastavitev.'}
                           </span>
                           <div className="collection-actions">
                             <button
@@ -1780,7 +2399,7 @@ function App() {
                               className="btn primary small"
                               disabled={collectionBusy}
                             >
-                              Shrani verzijo
+                              {versionForm.mode === 'edit' ? 'Shrani spremembe' : 'Shrani verzijo'}
                             </button>
                             <button
                               type="button"
@@ -1799,7 +2418,9 @@ function App() {
               )}
             </div>
           ) : (
-            <p className="hint">Za ustvarjanje zbirk izberi prijavljenega uporabnika.</p>
+            <p className="hint collection-hint">
+              Za ustvarjanje zbirk izberi prijavljenega uporabnika.
+            </p>
           )}
         </div>
 
@@ -2387,6 +3008,91 @@ function App() {
                   })}
                 </ul>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {selectionModal.open && (
+        <div
+          className="modal-backdrop"
+          onClick={(event) => {
+            if (event.target.classList.contains('modal-backdrop')) {
+              closeSelectionModal()
+            }
+          }}
+        >
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                Izberi {selectionModal.wordType === 'noun' ? 'samostalnike' : 'glagole'}
+              </h3>
+              <button type="button" className="close-modal" onClick={closeSelectionModal}>
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <input
+                type="text"
+                placeholder="Filter po geslih ali prevodih"
+                value={selectionModal.filter}
+                onChange={(event) =>
+                  setSelectionModal((prev) => ({ ...prev, filter: event.target.value }))
+                }
+                className="filter-input"
+              />
+              <div className="selection-toolbar">
+                <span className="pill-meta">Izbranih: {selectionCount}</span>
+                <div className="selection-actions">
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    onClick={selectAllSelectionItems}
+                    disabled={selectionModal.loading || selectionCount === selectionModal.items.length}
+                  >
+                    Izberi vse
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    onClick={clearSelectionItems}
+                    disabled={selectionModal.loading || selectionCount === 0}
+                  >
+                    Počisti vse
+                  </button>
+                </div>
+              </div>
+              {selectionModal.loading ? (
+                <p>Nalaganje ...</p>
+              ) : filteredSelectionItems.length === 0 ? (
+                <p>Ni zadetkov.</p>
+              ) : (
+                <ul className="items-list">
+                  {filteredSelectionItems.map((item) => {
+                    const term = item.solution ? item.solution.join(' · ') : '–'
+                    const translation = item.translation || '–'
+                    return (
+                      <li key={item.id}>
+                        <div className="item-line">
+                          <label className="selection-row">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(item.selected)}
+                              onChange={() => toggleSelectionItem(item.id)}
+                            />
+                            <span className="term">{term}</span>
+                          </label>
+                          <span className="translation">{translation}</span>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+              <div className="selection-footer">
+                <button type="button" className="btn primary" onClick={saveSelectionItems}>
+                  Potrdi izbor
+                </button>
+              </div>
             </div>
           </div>
         </div>
