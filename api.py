@@ -20,6 +20,16 @@ from pydantic import BaseModel, Field
 import learn
 
 WordType = Literal["noun", "verb", "number"]
+NumberComponent = Literal[
+    "basic",
+    "teens",
+    "tens",
+    "composite_tens",
+    "hundreds",
+    "composite_hundreds",
+    "thousands",
+    "composite_thousands",
+]
 
 app = FastAPI(
     title="German Trainer API",
@@ -108,6 +118,7 @@ class CycleRequest(BaseModel):
     include_solutions: bool = False
     max_number: Optional[int] = Field(default=None, ge=0)
     cycle_size: Optional[int] = Field(default=None, ge=1)
+    number_components: Optional[List[NumberComponent]] = None
 
 
 class CycleItem(BaseModel):
@@ -258,6 +269,11 @@ def start_cycle(payload: CycleRequest, conn: sqlite3.Connection = Depends(get_db
                 status_code=400,
                 detail=f"Največja številka mora biti ≤ {learn.NUMBER_MAX_LIMIT}.",
             )
+        components = payload.number_components
+        if components is not None and len(components) == 0:
+            raise HTTPException(status_code=400, detail="Izberi vsaj eno komponento.")
+        if components:
+            components = list(dict.fromkeys(components))
         cycle_index = learn.fetch_number_cycle_count(conn, payload.user_id) + 1
         total_attempts, accuracy = learn.global_number_accuracy(conn, payload.user_id)
         adaptive = (
@@ -270,6 +286,7 @@ def start_cycle(payload: CycleRequest, conn: sqlite3.Connection = Depends(get_db
             stats_map,
             adaptive,
             cycle_size=payload.cycle_size,
+            components=components,
         )
         if not selected_numbers:
             raise HTTPException(status_code=404, detail="Ni števil za ta razpon.")

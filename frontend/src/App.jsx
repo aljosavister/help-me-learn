@@ -8,6 +8,20 @@ const HIGH_ACCURACY_THRESHOLD = 0.88
 const NUMBER_MAX_LIMIT = 1000000
 const NUMBER_DEFAULT_MAX = 1000
 const NUMBER_DEFAULT_CYCLE_SIZE = 20
+const NUMBER_COMPONENTS = [
+  { key: 'basic', label: 'Osnove 0–12' },
+  { key: 'teens', label: 'Najstnice 13–19' },
+  { key: 'tens', label: 'Desetice (20, 30, …, 90)' },
+  { key: 'composite_tens', label: 'Sestavljene 21–99' },
+  { key: 'hundreds', label: 'Stotice (100, 200, …, 900)' },
+  { key: 'composite_hundreds', label: 'Sestavljene 101–999' },
+  { key: 'thousands', label: 'Tisočice (1000, 2000, …)' },
+  { key: 'composite_thousands', label: 'Sestavljene 1001+' },
+]
+const NUMBER_COMPONENTS_STORAGE_KEY = 'numberComponents'
+const NUMBER_COMPONENTS_TOGGLE_KEY = 'numberComponentsEnabled'
+const NUMBER_MAX_STORAGE_KEY = 'numberMax'
+const NUMBER_CYCLE_SIZE_STORAGE_KEY = 'numberCycleSize'
 
 const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
   let cleaned = text.trim().toLowerCase().replace(/ß/g, 'ss')
@@ -53,6 +67,10 @@ function App() {
   const [newUserName, setNewUserName] = useState('')
   const [numberMax, setNumberMax] = useState(NUMBER_DEFAULT_MAX)
   const [numberCycleSize, setNumberCycleSize] = useState(NUMBER_DEFAULT_CYCLE_SIZE)
+  const [useNumberComponents, setUseNumberComponents] = useState(false)
+  const [selectedNumberComponents, setSelectedNumberComponents] = useState(
+    NUMBER_COMPONENTS.map((component) => component.key),
+  )
   const [cycle, setCycle] = useState(null)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [answers, setAnswers] = useState([])
@@ -119,6 +137,54 @@ function App() {
       setStats(null)
     }
   }, [selectedUser, selectedModule])
+
+  useEffect(() => {
+    try {
+      const storedEnabled = localStorage.getItem(NUMBER_COMPONENTS_TOGGLE_KEY)
+      if (storedEnabled !== null) {
+        setUseNumberComponents(storedEnabled === 'true')
+      }
+      const storedComponents = localStorage.getItem(NUMBER_COMPONENTS_STORAGE_KEY)
+      if (storedComponents) {
+        const parsed = JSON.parse(storedComponents)
+        if (Array.isArray(parsed)) {
+          const allowed = new Set(NUMBER_COMPONENTS.map((component) => component.key))
+          const filtered = parsed.filter((item) => allowed.has(item))
+          setSelectedNumberComponents(filtered)
+        }
+      }
+      const storedMax = localStorage.getItem(NUMBER_MAX_STORAGE_KEY)
+      if (storedMax !== null) {
+        const parsedMax = Number(storedMax)
+        if (Number.isInteger(parsedMax) && parsedMax >= 0) {
+          setNumberMax(parsedMax)
+        }
+      }
+      const storedCycleSize = localStorage.getItem(NUMBER_CYCLE_SIZE_STORAGE_KEY)
+      if (storedCycleSize !== null) {
+        const parsedSize = Number(storedCycleSize)
+        if (Number.isInteger(parsedSize) && parsedSize >= 1) {
+          setNumberCycleSize(parsedSize)
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load number components from storage', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(NUMBER_COMPONENTS_TOGGLE_KEY, String(useNumberComponents))
+      localStorage.setItem(
+        NUMBER_COMPONENTS_STORAGE_KEY,
+        JSON.stringify(selectedNumberComponents),
+      )
+      localStorage.setItem(NUMBER_MAX_STORAGE_KEY, String(numberMax))
+      localStorage.setItem(NUMBER_CYCLE_SIZE_STORAGE_KEY, String(numberCycleSize))
+    } catch (err) {
+      console.error('Failed to save number components to storage', err)
+    }
+  }, [useNumberComponents, selectedNumberComponents, numberMax, numberCycleSize])
 
   useEffect(() => {
     if (currentQuestion) {
@@ -332,6 +398,7 @@ function App() {
     if (!selectedUser || !selectedModule) return
     let maxNumberPayload = null
     let cycleSizePayload = null
+    let numberComponentsPayload = null
     if (selectedModule === 'number') {
       const parsed = Number(numberMax)
       if (!Number.isInteger(parsed) || parsed < 0) {
@@ -349,6 +416,13 @@ function App() {
         return
       }
       cycleSizePayload = sizeParsed
+      if (useNumberComponents) {
+        if (selectedNumberComponents.length === 0) {
+          setError('Izberi vsaj eno komponento.')
+          return
+        }
+        numberComponentsPayload = selectedNumberComponents
+      }
     }
     setIsBusy(true)
     setError('')
@@ -363,6 +437,9 @@ function App() {
       }
       if (cycleSizePayload !== null) {
         body.cycle_size = cycleSizePayload
+      }
+      if (numberComponentsPayload) {
+        body.number_components = numberComponentsPayload
       }
       const data = await apiFetch('/cycles', {
         method: 'POST',
@@ -505,6 +582,23 @@ function App() {
       const copy = [...prev.forms]
       copy[index] = value
       return { ...prev, forms: copy }
+    })
+  }
+
+  const clearNumberComponents = () => {
+    setSelectedNumberComponents([])
+  }
+
+  const selectAllNumberComponents = () => {
+    setSelectedNumberComponents(NUMBER_COMPONENTS.map((component) => component.key))
+  }
+
+  const toggleNumberComponent = (key) => {
+    setSelectedNumberComponents((prev) => {
+      if (prev.includes(key)) {
+        return prev.filter((item) => item !== key)
+      }
+      return [...prev, key]
     })
   }
 
@@ -969,6 +1063,53 @@ function App() {
                   onChange={(event) => setNumberCycleSize(Number(event.target.value))}
                 />
               </label>
+              <div className="component-toggle">
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={useNumberComponents}
+                    onChange={(event) => setUseNumberComponents(event.target.checked)}
+                  />
+                  <span>Učenje po komponentah</span>
+                </label>
+                <span className="hint">
+                  Izberi skupine števil, ki jih želiš vaditi (upošteva največjo številko).
+                </span>
+              </div>
+              {useNumberComponents && (
+                <>
+                  <div className="component-actions">
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      onClick={selectAllNumberComponents}
+                      disabled={selectedNumberComponents.length === NUMBER_COMPONENTS.length}
+                    >
+                      Izberi vse
+                    </button>
+                    <button
+                      type="button"
+                      className="btn ghost small"
+                      onClick={clearNumberComponents}
+                      disabled={selectedNumberComponents.length === 0}
+                    >
+                      Počisti vse
+                    </button>
+                  </div>
+                  <div className="components-grid">
+                    {NUMBER_COMPONENTS.map((component) => (
+                      <label key={component.key} className="component-option">
+                        <input
+                          type="checkbox"
+                          checked={selectedNumberComponents.includes(component.key)}
+                          onChange={() => toggleNumberComponent(component.key)}
+                        />
+                        <span>{component.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
               <p className="hint">
                 Primer: 1000 pomeni, da vadiš števila od 0 do 1000. Velikost cikla določa število
                 vprašanj v enem zagonu.

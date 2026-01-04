@@ -104,6 +104,17 @@ NUMBER_TENS = {
     90: "neunzig",
 }
 
+NUMBER_COMPONENT_KEYS = (
+    "basic",
+    "teens",
+    "tens",
+    "composite_tens",
+    "hundreds",
+    "composite_hundreds",
+    "thousands",
+    "composite_thousands",
+)
+
 
 def number_to_german(value: int) -> str:
     if value < 0:
@@ -135,6 +146,18 @@ def number_to_german(value: int) -> str:
     if value == 1_000_000:
         return "eine Million"
     raise ValueError("Število je preveliko.")
+
+
+def number_component(value: int) -> str:
+    if value <= 12:
+        return "basic"
+    if value <= 19:
+        return "teens"
+    if value < 100:
+        return "tens" if value % 10 == 0 else "composite_tens"
+    if value < 1000:
+        return "hundreds" if value % 100 == 0 else "composite_hundreds"
+    return "thousands" if value % 1000 == 0 else "composite_thousands"
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -579,14 +602,20 @@ def choose_number_cycle_numbers(
     stats_map: Dict[int, Dict[str, object]],
     adaptive: bool,
     cycle_size: Optional[int] = None,
+    components: Optional[Sequence[str]] = None,
 ) -> List[int]:
     if max_number < 0:
         return []
-    total_count = max_number + 1
+    numbers = list(range(0, max_number + 1))
+    if components:
+        component_set = set(components)
+        numbers = [number for number in numbers if number_component(number) in component_set]
+    total_count = len(numbers)
+    if total_count == 0:
+        return []
     if cycle_size is None or cycle_size <= 0:
         cycle_size = NUMBER_CYCLE_SIZE
     target_size = min(cycle_size, total_count)
-    numbers = list(range(0, max_number + 1))
 
     if not adaptive:
         if total_count <= target_size:
