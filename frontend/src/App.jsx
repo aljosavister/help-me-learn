@@ -62,6 +62,7 @@ const USER_LEVEL_OPTIONS = [
   { value: 2, label: 'Urednik' },
   { value: 3, label: 'Skrbnik' },
 ]
+const SESSION_TOKEN_STORAGE_KEY = 'germanTrainerSessionToken'
 
 const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
   let cleaned = text.trim().toLowerCase().replace(/ß/g, 'ss')
@@ -79,6 +80,10 @@ async function apiFetch(path, options = {}) {
     typeof FormData !== 'undefined' && options.body instanceof FormData
   const defaultHeaders = isFormData ? {} : { 'Content-Type': 'application/json' }
   const headers = { ...defaultHeaders, ...(options.headers || {}) }
+  const token = localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
   const fetchOptions = {
     ...options,
     headers,
@@ -142,7 +147,6 @@ function App() {
     loading: false,
   })
   const [selectedModule, setSelectedModule] = useState(null)
-  const [newUserName, setNewUserName] = useState('')
   const [numberMax, setNumberMax] = useState(String(NUMBER_DEFAULT_MAX))
   const [numberCycleSize, setNumberCycleSize] = useState(String(NUMBER_DEFAULT_CYCLE_SIZE))
   const [useNumberComponents, setUseNumberComponents] = useState(false)
@@ -186,6 +190,11 @@ function App() {
   const [isLoadingProposals, setIsLoadingProposals] = useState(false)
   const [proposalActionLoading, setProposalActionLoading] = useState(false)
   const [isUpdatingUserLevel, setIsUpdatingUserLevel] = useState(false)
+  const [authUser, setAuthUser] = useState(null)
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [isAuthBusy, setIsAuthBusy] = useState(false)
+  const [localUserForm, setLocalUserForm] = useState({ name: '', email: '', password: '' })
   const [proposalFilters, setProposalFilters] = useState({
     wordType: 'all',
     proposalType: 'all',
@@ -198,10 +207,12 @@ function App() {
   const activeCollectionId = activeCollection?.versionId || null
   const isAnonymous = selectedUser?.id === ANONYMOUS_USER.id
   const userLevel = selectedUser?.level ?? 0
+  const sessionLevel = authUser?.level ?? 0
+  const reviewerUser = sessionLevel >= MODERATOR_LEVEL ? authUser : null
   const canEditItems = !activeCollectionId && !isAnonymous && userLevel >= AUTHOR_LEVEL
   const canManageCollections = Boolean(selectedUser && !isAnonymous)
-  const canReviewProposals = Boolean(selectedUser && !isAnonymous && userLevel >= MODERATOR_LEVEL)
-  const canAssignLevels = Boolean(selectedUser && !isAnonymous && userLevel >= ADMIN_LEVEL)
+  const canReviewProposals = Boolean(reviewerUser)
+  const canAssignLevels = Boolean(sessionLevel >= ADMIN_LEVEL)
 
   const refreshModules = useCallback(
     async (versionId = activeCollectionId) => {
@@ -235,7 +246,7 @@ function App() {
   }, [activeCollectionId])
 
   const loadItemProposals = useCallback(async () => {
-    if (!selectedUser || !canReviewProposals) {
+    if (!reviewerUser || !canReviewProposals) {
       setItemProposals([])
       return
     }
@@ -244,7 +255,7 @@ function App() {
     try {
       const params = new URLSearchParams({
         status: 'pending',
-        reviewer_user_id: String(selectedUser.id),
+        reviewer_user_id: String(reviewerUser.id),
       })
       if (proposalFilters.wordType !== 'all') {
         params.set('word_type', proposalFilters.wordType)
@@ -265,23 +276,30 @@ function App() {
     } finally {
       setIsLoadingProposals(false)
     }
-  }, [selectedUser, canReviewProposals, proposalFilters])
+  }, [reviewerUser, canReviewProposals, proposalFilters])
 
   const updateUserLevel = async (userId, level) => {
-    if (!selectedUser) return
+    const requesterId = authUser?.id
+    if (!requesterId) {
+      setError('Prijava je potrebna.')
+      return
+    }
     setIsUpdatingUserLevel(true)
     setError('')
     try {
       const updated = await apiFetch(`/users/${userId}`, {
         method: 'PATCH',
         body: {
-          requester_user_id: selectedUser.id,
+          requester_user_id: requesterId,
           level,
         },
       })
       setUsers((prev) => prev.map((user) => (user.id === updated.id ? updated : user)))
-      if (selectedUser.id === updated.id) {
+      if (selectedUser?.id === updated.id) {
         setSelectedUser(updated)
+      }
+      if (authUser?.id === updated.id) {
+        setAuthUser(updated)
       }
       setInfoMessage('Nivo uporabnika posodobljen.')
     } catch (err) {
@@ -306,6 +324,25 @@ function App() {
   useEffect(() => {
     loadItemProposals()
   }, [loadItemProposals])
+
+  useEffect(() => {
+    if (authUser) {
+      setSelectedUser(authUser)
+    } else {
+      setSelectedUser(ANONYMOUS_USER)
+    }
+  }, [authUser])
+
+  useEffect(() => {
+    const token = localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)
+    if (!token) return
+    apiFetch('/auth/me')
+      .then((user) => setAuthUser(user))
+      .catch(() => {
+        localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY)
+        setAuthUser(null)
+      })
+  }, [])
 
   const loadStoredSettings = useCallback(() => {
     try {
@@ -1086,20 +1123,65 @@ function App() {
     }
   }, [selectedUser, isAnonymous, loadOwnerCollections])
 
-  const handleCreateUser = async (event) => {
+  const handleLogin = async (event) => {
     event.preventDefault()
-    if (!newUserName.trim()) return
+    if (!authEmail.trim() || !authPassword) return
+    setIsAuthBusy(true)
     setError('')
     try {
-      const created = await apiFetch('/users', {
+      const payload = await apiFetch('/auth/login', {
         method: 'POST',
-        body: { name: newUserName.trim() },
+        body: { email: authEmail.trim(), password: authPassword },
       })
-      setUsers((prev) => [...prev, created])
-      setSelectedUser(created)
-      setNewUserName('')
+      localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, payload.token)
+      setAuthUser(payload.user)
+      setAuthEmail('')
+      setAuthPassword('')
+      setInfoMessage('Prijava uspešna.')
     } catch (err) {
       setError(err.message)
+    } finally {
+      setIsAuthBusy(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    setIsAuthBusy(true)
+    setError('')
+    try {
+      await apiFetch('/auth/logout', { method: 'POST' })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY)
+      setAuthUser(null)
+      setIsAuthBusy(false)
+    }
+  }
+
+  const handleCreateLocalUser = async (event) => {
+    event.preventDefault()
+    if (!localUserForm.name.trim() || !localUserForm.email.trim() || !localUserForm.password) {
+      return
+    }
+    setIsAuthBusy(true)
+    setError('')
+    try {
+      const created = await apiFetch('/auth/users', {
+        method: 'POST',
+        body: {
+          name: localUserForm.name.trim(),
+          email: localUserForm.email.trim(),
+          password: localUserForm.password,
+        },
+      })
+      setUsers((prev) => [...prev, created])
+      setLocalUserForm({ name: '', email: '', password: '' })
+      setInfoMessage('Uporabnik ustvarjen.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsAuthBusy(false)
     }
   }
 
@@ -1220,7 +1302,7 @@ function App() {
   }
 
   const reviewItemProposal = async (proposalId, decision) => {
-    if (!selectedUser) return
+    if (!reviewerUser) return
     const proposal = itemProposals.find((item) => item.id === proposalId)
     setProposalActionLoading(true)
     setError('')
@@ -1228,7 +1310,7 @@ function App() {
       await apiFetch(`/item-proposals/${proposalId}/review`, {
         method: 'POST',
         body: {
-          reviewer_user_id: selectedUser.id,
+          reviewer_user_id: reviewerUser.id,
           status: decision,
         },
       })
@@ -2018,99 +2100,126 @@ function App() {
 
       <section className="panel-grid">
         <div className="panel">
-          <h2>1. Izberi uporabnika</h2>
+          <h2>1. Prijava</h2>
           {isLoadingData && <p className="hint">Nalagam uporabnike in sklope ...</p>}
-          {users.length === 0 && <p>Začni tako, da ustvariš prvega uporabnika.</p>}
-          <div className="pill-list">
-            <div
-              className={`pill ${isAnonymous ? 'active' : ''}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => setSelectedUser(ANONYMOUS_USER)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  setSelectedUser(ANONYMOUS_USER)
-                }
-              }}
-            >
-              <div>
-                <span>Anonimno</span>
-                <span className="pill-meta">Brez shranjevanja napredka</span>
-              </div>
-            </div>
-            {users.map((user) => {
-              const isActive = selectedUser?.id === user.id
-              return (
-                <div
-                  key={user.id}
-                  className={`pill ${isActive ? 'active' : ''}`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedUser(user)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      setSelectedUser(user)
-                    }
-                  }}
+          {!authUser && (
+            <p className="hint">Uporabljaš anonimni način (brez shranjevanja napredka).</p>
+          )}
+          <div className="auth-section">
+            <p className="section-title">Prijava</p>
+            {authUser ? (
+              <div className="auth-status">
+                <span>
+                  Prijavljen: <strong>{authUser.name}</strong> (
+                  {USER_LEVEL_LABELS[authUser.level ?? 0] || authUser.level})
+                </span>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={handleLogout}
+                  disabled={isAuthBusy}
                 >
-                  <div className="user-pill-main">
-                    <span className="user-name">{user.name}</span>
-                    <span className="pill-meta">ID: {user.id}</span>
-                    <span className="pill-meta">
-                      Nivo: {USER_LEVEL_LABELS[user.level ?? 0] || user.level}
-                    </span>
-                  </div>
-                  {canAssignLevels && (
-                    <label
-                      className="user-level-select"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <span className="pill-meta">Nastavi nivo</span>
-                      <select
-                        value={user.level ?? 0}
-                        onChange={(event) => {
-                          event.stopPropagation()
-                          updateUserLevel(user.id, Number(event.target.value))
-                        }}
-                        disabled={isUpdatingUserLevel || user.id === selectedUser?.id}
-                      >
-                        {USER_LEVEL_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  <button
-                    type="button"
-                    className="remove-btn"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      handleDeleteUser(user.id)
-                    }}
-                    disabled={isBusy}
-                    aria-label={`Izbriši uporabnika ${user.name}`}
-                  >
-                    ✕
-                  </button>
-                </div>
-              )
-            })}
+                  Odjava
+                </button>
+              </div>
+            ) : (
+              <form className="auth-form" onSubmit={handleLogin}>
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={authEmail}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                />
+                <input
+                  type="password"
+                  placeholder="Geslo"
+                  value={authPassword}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                />
+                <button type="submit" className="btn primary small" disabled={isAuthBusy}>
+                  Prijava
+                </button>
+              </form>
+            )}
+            {sessionLevel >= ADMIN_LEVEL && authUser && (
+              <form className="auth-form" onSubmit={handleCreateLocalUser}>
+                <input
+                  type="text"
+                  placeholder="Ime"
+                  value={localUserForm.name}
+                  onChange={(event) =>
+                    setLocalUserForm((prev) => ({ ...prev, name: event.target.value }))
+                  }
+                />
+                <input
+                  type="email"
+                  placeholder="Email"
+                  value={localUserForm.email}
+                  onChange={(event) =>
+                    setLocalUserForm((prev) => ({ ...prev, email: event.target.value }))
+                  }
+                />
+                <input
+                  type="password"
+                  placeholder="Geslo"
+                  value={localUserForm.password}
+                  onChange={(event) =>
+                    setLocalUserForm((prev) => ({ ...prev, password: event.target.value }))
+                  }
+                />
+                <button type="submit" className="btn secondary small" disabled={isAuthBusy}>
+                  Ustvari uporabnika
+                </button>
+              </form>
+            )}
           </div>
-          <form className="inline-form" onSubmit={handleCreateUser}>
-            <input
-              type="text"
-              placeholder="Novo ime"
-              value={newUserName}
-              onChange={(event) => setNewUserName(event.target.value)}
-            />
-            <button type="submit" className="btn secondary">
-              Dodaj
-            </button>
-          </form>
+          {canAssignLevels && (
+            <div className="admin-users">
+              <p className="section-title">Uporabniki</p>
+              {users.length === 0 ? (
+                <p className="hint">Ni ustvarjenih uporabnikov.</p>
+              ) : (
+                <div className="pill-list">
+                  {users.map((user) => (
+                    <div key={user.id} className="pill">
+                      <div className="user-pill-main">
+                        <span className="user-name">{user.name}</span>
+                        <span className="pill-meta">ID: {user.id}</span>
+                        <span className="pill-meta">
+                          Nivo: {USER_LEVEL_LABELS[user.level ?? 0] || user.level}
+                        </span>
+                      </div>
+                      <label className="user-level-select">
+                        <span className="pill-meta">Nastavi nivo</span>
+                        <select
+                          value={user.level ?? 0}
+                          onChange={(event) =>
+                            updateUserLevel(user.id, Number(event.target.value))
+                          }
+                          disabled={isUpdatingUserLevel || user.id === authUser?.id}
+                        >
+                          {USER_LEVEL_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="remove-btn"
+                        onClick={() => handleDeleteUser(user.id)}
+                        disabled={isBusy || user.id === authUser?.id}
+                        aria-label={`Izbriši uporabnika ${user.name}`}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="panel">

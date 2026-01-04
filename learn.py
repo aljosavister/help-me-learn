@@ -8,6 +8,8 @@ tracks user performance, and adapts the questioning strategy over time.
 from __future__ import annotations
 
 import csv
+import hashlib
+import secrets
 import json
 import os
 import random
@@ -60,6 +62,7 @@ COLOR_RESET = "\033[0m"
 COLOR_NOUN = "\033[95m"  # magenta
 COLOR_VERB = "\033[96m"  # cyan
 COLOR_TITLE = "\033[93m"  # yellow
+DEFAULT_ADMIN_PASSWORD = "admin"
 
 
 def color_text(content: str, color_code: str) -> str:
@@ -74,6 +77,22 @@ def now_iso() -> str:
 
 def is_anonymous_user(user_id: Optional[int]) -> bool:
     return user_id is None or user_id <= 0
+
+
+def hash_password(password: str) -> Tuple[str, str]:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+    return salt.hex(), digest.hex()
+
+
+def verify_password(password: str, salt_hex: str, digest_hex: str) -> bool:
+    try:
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+    except ValueError:
+        return False
+    computed = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120_000)
+    return secrets.compare_digest(computed, expected)
 
 
 def normalize_text(
@@ -280,6 +299,14 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (proposer_user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (reviewer_user_id) REFERENCES users(id) ON DELETE SET NULL,
             FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS user_stats (
@@ -574,23 +601,52 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     columns = [row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()]
     if "level" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN level INTEGER NOT NULL DEFAULT 0")
+    if "email" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+    if "password_hash" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    if "password_salt" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN password_salt TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL"
+    )
     ensure_admin_user(conn)
     conn.commit()
 
 
 def ensure_admin_user(conn: sqlite3.Connection) -> None:
     row = conn.execute(
-        "SELECT id, level FROM users WHERE name = ?",
+        "SELECT id, level, email, password_hash, password_salt FROM users WHERE name = ?",
         ("admin",),
     ).fetchone()
+    admin_email = "admin@local"
+    salt_hex, digest_hex = hash_password(DEFAULT_ADMIN_PASSWORD)
     if row:
-        current_level = row[1] if len(row) > 1 else 0
+        updates = []
+        params = []
+        current_level = row["level"] if "level" in row.keys() else (row[1] or 0)
         if current_level < 3:
-            conn.execute("UPDATE users SET level = 3 WHERE id = ?", (row[0],))
+            updates.append("level = 3")
+        if not row["email"]:
+            updates.append("email = ?")
+            params.append(admin_email)
+        if not row["password_hash"] or not row["password_salt"]:
+            updates.append("password_hash = ?")
+            updates.append("password_salt = ?")
+            params.extend([digest_hex, salt_hex])
+        if updates:
+            params.append(row["id"])
+            conn.execute(
+                f"UPDATE users SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
         return
     conn.execute(
-        "INSERT INTO users (name, created_at, level) VALUES (?, ?, 3)",
-        ("admin", now_iso()),
+        """
+        INSERT INTO users (name, created_at, level, email, password_hash, password_salt)
+        VALUES (?, ?, 3, ?, ?, ?)
+        """,
+        ("admin", now_iso(), admin_email, digest_hex, salt_hex),
     )
 
 

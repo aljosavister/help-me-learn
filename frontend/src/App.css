@@ -133,6 +133,41 @@ body {
   font-size: 0.75rem;
 }
 
+.auth-section {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.auth-form {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  align-items: center;
+}
+
+.auth-form input {
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 0.85rem;
+}
+
+.auth-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.admin-users {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
 .pill .remove-btn {
   margin-left: auto;
   background: transparent;

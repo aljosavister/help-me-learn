@@ -9,11 +9,12 @@ and submit answers so that statistics remain synchronized.
 from __future__ import annotations
 
 import json
+import secrets
 import random
 import sqlite3
 from typing import Dict, Generator, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -274,6 +275,52 @@ def _generate_access_code(conn: sqlite3.Connection, collection_id: int, version_
     raise HTTPException(status_code=500, detail="Ne morem ustvariti unikatne kode.")
 
 
+def _parse_token(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    if authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip()
+    return None
+
+
+def _get_session_user(
+    conn: sqlite3.Connection, authorization: Optional[str]
+) -> Optional[sqlite3.Row]:
+    token = _parse_token(authorization)
+    if not token:
+        return None
+    now = learn.now_iso()
+    row = conn.execute(
+        """
+        SELECT u.*
+        FROM sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.token = ?
+          AND (s.expires_at IS NULL OR s.expires_at > ?)
+        """,
+        (token, now),
+    ).fetchone()
+    return row
+
+
+def _require_session(conn: sqlite3.Connection, authorization: Optional[str]) -> sqlite3.Row:
+    row = _get_session_user(conn, authorization)
+    if not row:
+        raise HTTPException(status_code=401, detail="Prijava je potrebna.")
+    return row
+
+
+def _create_session(conn: sqlite3.Connection, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    now = learn.now_iso()
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, NULL)",
+        (token, user_id, now),
+    )
+    conn.commit()
+    return token
+
+
 def _build_item_record(word_type: str, translation: str, solutions: List[str]) -> tuple[str, str, str, str]:
     if word_type == "noun":
         if len(solutions) != 1 or not solutions[0]:
@@ -471,6 +518,22 @@ class UserOut(BaseModel):
 class UserUpdate(BaseModel):
     requester_user_id: int
     level: int = Field(..., ge=0, le=10)
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    user: UserOut
+
+
+class LocalUserCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    email: str = Field(..., min_length=3, max_length=200)
+    password: str = Field(..., min_length=6, max_length=200)
 
 
 class ModuleOut(BaseModel):
@@ -692,6 +755,97 @@ def root() -> Dict[str, str]:
     return {"message": "German Trainer API je pripravljen.", "db": str(learn.DB_PATH)}
 
 
+@app.post("/auth/login", response_model=LoginResponse)
+def login(payload: LoginRequest, conn: sqlite3.Connection = Depends(get_db)) -> LoginResponse:
+    email = payload.email.strip().lower()
+    if not email or not payload.password:
+        raise HTTPException(status_code=400, detail="Email in geslo sta obvezna.")
+    row = conn.execute(
+        """
+        SELECT id, name, created_at, level, password_hash, password_salt
+        FROM users
+        WHERE email = ?
+        """,
+        (email,),
+    ).fetchone()
+    if not row or not row["password_hash"] or not row["password_salt"]:
+        raise HTTPException(status_code=401, detail="Napačen email ali geslo.")
+    if not learn.verify_password(payload.password, row["password_salt"], row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Napačen email ali geslo.")
+    token = _create_session(conn, row["id"])
+    user = UserOut(
+        id=row["id"],
+        name=row["name"],
+        created_at=row["created_at"],
+        level=row["level"] or 0,
+    )
+    return LoginResponse(token=token, user=user)
+
+
+@app.post("/auth/logout")
+def logout(
+    authorization: Optional[str] = Header(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Dict[str, str]:
+    token = _parse_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Prijava je potrebna.")
+    conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    conn.commit()
+    return {"status": "ok"}
+
+
+@app.get("/auth/me", response_model=UserOut)
+def auth_me(
+    authorization: Optional[str] = Header(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> UserOut:
+    row = _require_session(conn, authorization)
+    return UserOut(
+        id=row["id"],
+        name=row["name"],
+        created_at=row["created_at"],
+        level=row["level"] or 0,
+    )
+
+
+@app.post("/auth/users", response_model=UserOut, status_code=201)
+def create_local_user(
+    payload: LocalUserCreate,
+    authorization: Optional[str] = Header(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> UserOut:
+    session_user = _require_session(conn, authorization)
+    if (session_user["level"] or 0) < USER_LEVEL_ADMIN:
+        raise HTTPException(status_code=403, detail="Nimaš pravic za ustvarjanje uporabnikov.")
+    email = payload.email.strip().lower()
+    name = payload.name.strip()
+    if not email or not name:
+        raise HTTPException(status_code=400, detail="Email in ime sta obvezna.")
+    salt_hex, digest_hex = learn.hash_password(payload.password)
+    now = learn.now_iso()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO users (name, email, password_hash, password_salt, created_at, level)
+            VALUES (?, ?, ?, ?, ?, 0)
+            """,
+            (name, email, digest_hex, salt_hex, now),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Uporabnik z istim imenom ali emailom že obstaja.")
+    row = conn.execute(
+        "SELECT id, name, created_at, level FROM users WHERE id = ?",
+        (cur.lastrowid,),
+    ).fetchone()
+    return UserOut(
+        id=row["id"],
+        name=row["name"],
+        created_at=row["created_at"],
+        level=row["level"] or 0,
+    )
+
 @app.get("/users", response_model=List[UserOut])
 def list_users(conn: sqlite3.Connection = Depends(get_db)) -> List[UserOut]:
     rows = conn.execute("SELECT id, name, created_at, level FROM users ORDER BY id").fetchall()
@@ -733,8 +887,16 @@ def get_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> UserOu
 
 
 @app.patch("/users/{user_id}", response_model=UserOut)
-def update_user(user_id: int, payload: UserUpdate, conn: sqlite3.Connection = Depends(get_db)) -> UserOut:
-    ensure_admin(conn, payload.requester_user_id)
+def update_user(
+    user_id: int,
+    payload: UserUpdate,
+    authorization: Optional[str] = Header(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> UserOut:
+    session_user = _require_session(conn, authorization)
+    if session_user["id"] != payload.requester_user_id:
+        raise HTTPException(status_code=403, detail="Neveljaven uporabnik seje.")
+    ensure_admin(conn, session_user["id"])
     ensure_user(conn, user_id)
     conn.execute("UPDATE users SET level = ? WHERE id = ?", (payload.level, user_id))
     conn.commit()
@@ -2146,9 +2308,13 @@ def list_item_proposals(
     proposal_type: Optional[str] = Query(default=None),
     proposer_user_id: Optional[int] = Query(default=None),
     query: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> List[ItemProposalOut]:
-    ensure_moderator(conn, reviewer_user_id)
+    session_user = _require_session(conn, authorization)
+    if session_user["id"] != reviewer_user_id:
+        raise HTTPException(status_code=403, detail="Neveljaven uporabnik seje.")
+    ensure_moderator(conn, session_user["id"])
     params: List[object] = [status]
     sql_query = """
         SELECT
@@ -2187,9 +2353,13 @@ def list_item_proposals(
 def review_item_proposal(
     proposal_id: int,
     payload: ItemProposalReview,
+    authorization: Optional[str] = Header(default=None),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ItemProposalOut:
-    ensure_moderator(conn, payload.reviewer_user_id)
+    session_user = _require_session(conn, authorization)
+    if session_user["id"] != payload.reviewer_user_id:
+        raise HTTPException(status_code=403, detail="Neveljaven uporabnik seje.")
+    ensure_moderator(conn, session_user["id"])
     row = _fetch_item_proposal(conn, proposal_id)
     if row["status"] != "pending":
         raise HTTPException(status_code=400, detail="Predlog je že obdelan.")
@@ -2406,7 +2576,13 @@ def create_item(payload: ItemCreate, conn: sqlite3.Connection = Depends(get_db))
     )
 
 @app.delete("/users/{user_id}", status_code=204)
-def delete_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> Response:
+def delete_user(
+    user_id: int,
+    authorization: Optional[str] = Header(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    session_user = _require_session(conn, authorization)
+    ensure_admin(conn, session_user["id"])
     ensure_user(conn, user_id)
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
