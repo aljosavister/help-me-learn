@@ -82,8 +82,8 @@ function App() {
   const [selectedUser, setSelectedUser] = useState(null)
   const [selectedModule, setSelectedModule] = useState(null)
   const [newUserName, setNewUserName] = useState('')
-  const [numberMax, setNumberMax] = useState(NUMBER_DEFAULT_MAX)
-  const [numberCycleSize, setNumberCycleSize] = useState(NUMBER_DEFAULT_CYCLE_SIZE)
+  const [numberMax, setNumberMax] = useState(String(NUMBER_DEFAULT_MAX))
+  const [numberCycleSize, setNumberCycleSize] = useState(String(NUMBER_DEFAULT_CYCLE_SIZE))
   const [useNumberComponents, setUseNumberComponents] = useState(false)
   const [selectedNumberComponents, setSelectedNumberComponents] = useState(
     NUMBER_COMPONENTS.map((component) => component.key),
@@ -188,17 +188,11 @@ function App() {
       }
       const storedMax = localStorage.getItem(NUMBER_MAX_STORAGE_KEY)
       if (storedMax !== null) {
-        const parsedMax = Number(storedMax)
-        if (Number.isInteger(parsedMax) && parsedMax >= 0) {
-          setNumberMax(parsedMax)
-        }
+        setNumberMax(storedMax)
       }
       const storedCycleSize = localStorage.getItem(NUMBER_CYCLE_SIZE_STORAGE_KEY)
       if (storedCycleSize !== null) {
-        const parsedSize = Number(storedCycleSize)
-        if (Number.isInteger(parsedSize) && parsedSize >= 1) {
-          setNumberCycleSize(parsedSize)
-        }
+        setNumberCycleSize(storedCycleSize)
       }
       const storedFamilyLevels = localStorage.getItem(FAMILY_LEVELS_STORAGE_KEY)
       if (storedFamilyLevels) {
@@ -249,8 +243,8 @@ function App() {
         NUMBER_COMPONENTS_STORAGE_KEY,
         JSON.stringify(selectedNumberComponents),
       )
-      localStorage.setItem(NUMBER_MAX_STORAGE_KEY, String(numberMax))
-      localStorage.setItem(NUMBER_CYCLE_SIZE_STORAGE_KEY, String(numberCycleSize))
+      localStorage.setItem(NUMBER_MAX_STORAGE_KEY, numberMax)
+      localStorage.setItem(NUMBER_CYCLE_SIZE_STORAGE_KEY, numberCycleSize)
       localStorage.setItem(FAMILY_LEVELS_STORAGE_KEY, JSON.stringify(familyLevels))
       localStorage.setItem(FAMILY_CASES_STORAGE_KEY, JSON.stringify(familyCases))
       localStorage.setItem(FAMILY_MODES_STORAGE_KEY, JSON.stringify(familyModes))
@@ -487,7 +481,12 @@ function App() {
     let familyModesPayload = null
     let familyIncludePluralPayload = null
     if (selectedModule === 'number') {
-      const parsed = Number(numberMax)
+      const trimmedMax = numberMax.trim()
+      if (!trimmedMax) {
+        setError('Vnesi največjo številko.')
+        return
+      }
+      const parsed = Number(trimmedMax)
       if (!Number.isInteger(parsed) || parsed < 0) {
         setError('Vnesi celo število ≥ 0 za največjo številko.')
         return
@@ -497,7 +496,12 @@ function App() {
         return
       }
       maxNumberPayload = parsed
-      const sizeParsed = Number(numberCycleSize)
+      const trimmedSize = numberCycleSize.trim()
+      if (!trimmedSize) {
+        setError('Vnesi velikost cikla.')
+        return
+      }
+      const sizeParsed = Number(trimmedSize)
       if (!Number.isInteger(sizeParsed) || sizeParsed < 1) {
         setError('Velikost cikla mora biti celo število ≥ 1.')
         return
@@ -780,7 +784,12 @@ function App() {
     let maxNumberParam = null
     let familyQuery = null
     if (wordType === 'number') {
-      const parsed = Number(numberMax)
+      const trimmed = numberMax.trim()
+      if (!trimmed) {
+        setError('Vnesi največjo številko.')
+        return
+      }
+      const parsed = Number(trimmed)
       if (!Number.isInteger(parsed) || parsed < 0) {
         setError('Vnesi celo število ≥ 0 za največjo številko.')
         return
@@ -905,7 +914,12 @@ function App() {
     }
     let limit = null
     if (resultsWordType === 'number') {
-      const sizeParsed = Number(numberCycleSize)
+      const trimmedSize = numberCycleSize.trim()
+      if (!trimmedSize) {
+        setError('Vnesi velikost cikla.')
+        return
+      }
+      const sizeParsed = Number(trimmedSize)
       if (!Number.isInteger(sizeParsed) || sizeParsed < 1) {
         setError('Velikost cikla mora biti celo število ≥ 1.')
         return
@@ -1230,7 +1244,7 @@ function App() {
                   min="0"
                   max={NUMBER_MAX_LIMIT}
                   value={numberMax}
-                  onChange={(event) => setNumberMax(Number(event.target.value))}
+                  onChange={(event) => setNumberMax(event.target.value)}
                 />
               </label>
               <label>
@@ -1239,7 +1253,7 @@ function App() {
                   type="number"
                   min="1"
                   value={numberCycleSize}
-                  onChange={(event) => setNumberCycleSize(Number(event.target.value))}
+                  onChange={(event) => setNumberCycleSize(event.target.value)}
                 />
               </label>
               <div className="component-toggle">
