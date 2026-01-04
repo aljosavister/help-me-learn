@@ -28,6 +28,21 @@ EASY_REVIEW_FRACTION = 0.25  # share of "easy" cards kept in adaptive cycles
 NUMBER_CYCLE_SIZE = 20
 NUMBER_MAX_LIMIT = 1_000_000
 NUMBER_DEFAULT_MAX = 1_000
+FAMILY_CYCLE_SIZE = 20
+
+FAMILY_LEVELS = ("A1", "A2")
+FAMILY_CASES = ("nominative", "accusative", "dative")
+FAMILY_MODES = ("noun", "phrase")
+FAMILY_PRONOUNS = (
+    "my",
+    "your",
+    "his",
+    "her",
+    "our",
+    "your_pl",
+    "their",
+    "your_formal",
+)
 
 QUIT_COMMANDS = {"q", "quit", "exit"}
 SHOW_COMMANDS = {"?", "help", "pomoc", "answer", "odgovor"}
@@ -35,6 +50,9 @@ SKIP_COMMANDS = {"skip", "naprej", "s"}
 NOUN_LABELS = ["člen + samostalnik"]
 VERB_LABELS = ["infinitiv", "3. oseba ednine", "preterit", "perfekt"]
 NUMBER_LABELS = ["Zapis po nemško"]
+FAMILY_LABELS_NOUN = ["člen + samostalnik", "plural (z die)"]
+FAMILY_LABELS_NOUN_PLURAL = ["plural (z die)"]
+FAMILY_LABELS_PHRASE = ["Zapis po nemško"]
 
 USE_COLORS = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 COLOR_RESET = "\033[0m"
@@ -115,6 +133,47 @@ NUMBER_COMPONENT_KEYS = (
     "composite_thousands",
 )
 
+FAMILY_CASE_LABELS = {
+    "nominative": "Nominativ",
+    "accusative": "Akuzativ",
+    "dative": "Dativ",
+}
+
+FAMILY_GERMAN_ARTICLES = {
+    "m": "der",
+    "f": "die",
+    "n": "das",
+    "pl": "die",
+}
+
+FAMILY_SLO_PRONOUNS = {
+    "my": {"m": "moj", "f": "moja", "n": "moje", "pl": "moji"},
+    "your": {"m": "tvoj", "f": "tvoja", "n": "tvoje", "pl": "tvoji"},
+    "his": {"m": "njegov", "f": "njegova", "n": "njegovo", "pl": "njegovi"},
+    "her": {"m": "njen", "f": "njena", "n": "njeno", "pl": "njeni"},
+    "our": {"m": "naš", "f": "naša", "n": "naše", "pl": "naši"},
+    "your_pl": {"m": "vaš", "f": "vaša", "n": "vaše", "pl": "vaši"},
+    "their": {"m": "njihov", "f": "njihova", "n": "njihovo", "pl": "njihovi"},
+    "your_formal": {"m": "Vaš", "f": "Vaša", "n": "Vaše", "pl": "Vaši"},
+}
+
+FAMILY_GERMAN_PRONOUN_STEMS = {
+    "my": "mein",
+    "your": "dein",
+    "his": "sein",
+    "her": "ihr",
+    "our": "unser",
+    "your_pl": "euer",
+    "their": "ihr",
+    "your_formal": "Ihr",
+}
+
+FAMILY_GERMAN_ENDINGS = {
+    "nominative": {"m": "", "f": "e", "n": "", "pl": "e"},
+    "accusative": {"m": "en", "f": "e", "n": "", "pl": "e"},
+    "dative": {"m": "em", "f": "er", "n": "em", "pl": "en"},
+}
+
 
 def number_to_german(value: int) -> str:
     if value < 0:
@@ -158,6 +217,25 @@ def number_component(value: int) -> str:
     if value < 1000:
         return "hundreds" if value % 100 == 0 else "composite_hundreds"
     return "thousands" if value % 1000 == 0 else "composite_thousands"
+
+
+def german_dative_plural(plural: str) -> str:
+    if plural.endswith("n") or plural.endswith("s"):
+        return plural
+    return f"{plural}n"
+
+
+def german_possessive(pronoun_key: str, case_name: str, gender: str) -> str:
+    stem = FAMILY_GERMAN_PRONOUN_STEMS[pronoun_key]
+    ending = FAMILY_GERMAN_ENDINGS[case_name][gender]
+    if stem == "euer" and ending.startswith("e"):
+        return f"eur{ending}"
+    return f"{stem}{ending}"
+
+
+def slovenian_possessive(pronoun_key: str, gender: str) -> str:
+    forms = FAMILY_SLO_PRONOUNS.get(pronoun_key, {})
+    return forms.get(gender, forms.get("m", ""))
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -244,6 +322,64 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS number_cycles (
+            user_id INTEGER NOT NULL,
+            cycles INTEGER NOT NULL DEFAULT 0,
+            last_cycle_at TEXT,
+            PRIMARY KEY (user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS family_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lemma TEXT NOT NULL,
+            gender TEXT NOT NULL CHECK(gender IN ('m', 'f', 'n', 'pl')),
+            plural TEXT NOT NULL,
+            sl_singular TEXT NOT NULL,
+            sl_plural TEXT NOT NULL,
+            level TEXT NOT NULL CHECK(level IN ('A1', 'A2')),
+            UNIQUE(lemma, gender)
+        );
+
+        CREATE TABLE IF NOT EXISTS family_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK(mode IN ('noun', 'phrase')),
+            case_name TEXT,
+            pronoun TEXT,
+            number_form TEXT NOT NULL CHECK(number_form IN ('singular', 'plural', 'pair')),
+            UNIQUE(item_id, mode, case_name, pronoun, number_form),
+            FOREIGN KEY (item_id) REFERENCES family_items(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS family_stats (
+            user_id INTEGER NOT NULL,
+            card_id INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            wrong INTEGER NOT NULL DEFAULT 0,
+            reveals INTEGER NOT NULL DEFAULT 0,
+            correct_streak INTEGER NOT NULL DEFAULT 0,
+            last_result TEXT,
+            last_seen TEXT,
+            PRIMARY KEY (user_id, card_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (card_id) REFERENCES family_cards(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS family_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            card_id INTEGER NOT NULL,
+            asked_at TEXT NOT NULL,
+            was_correct INTEGER NOT NULL,
+            was_revealed INTEGER NOT NULL,
+            answers_json TEXT NOT NULL,
+            cycle_number INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (card_id) REFERENCES family_cards(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS family_cycles (
             user_id INTEGER NOT NULL,
             cycles INTEGER NOT NULL DEFAULT 0,
             last_cycle_at TEXT,
@@ -345,6 +481,104 @@ def import_csv_text(conn: sqlite3.Connection, word_type: str, content: str) -> D
         records, errors = build_verb_records(rows)
     added, skipped = import_records(conn, word_type, records)
     return {"added": added, "skipped": skipped, "errors": errors}
+
+
+def load_family_csv_records() -> List[Dict[str, str]]:
+    path = BASE_DIR / "druzina.csv"
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        records: List[Dict[str, str]] = []
+        for row in reader:
+            if not row:
+                continue
+            cleaned = {key: (value or "").strip() for key, value in row.items()}
+            if not cleaned.get("lemma"):
+                continue
+            records.append(cleaned)
+        return records
+
+
+def seed_family_items(conn: sqlite3.Connection) -> int:
+    existing = conn.execute("SELECT 1 FROM family_items LIMIT 1").fetchone()
+    if existing:
+        return 0
+    records = load_family_csv_records()
+    if not records:
+        return 0
+    added = 0
+    for record in records:
+        lemma = record.get("lemma", "")
+        gender = record.get("gender", "")
+        plural = record.get("plural", "")
+        sl_singular = record.get("sl_singular", "")
+        sl_plural = record.get("sl_plural", "")
+        level = record.get("level", "")
+        if (
+            not lemma
+            or gender not in {"m", "f", "n", "pl"}
+            or not plural
+            or not sl_singular
+            or not sl_plural
+            or level not in FAMILY_LEVELS
+        ):
+            continue
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO family_items (lemma, gender, plural, sl_singular, sl_plural, level)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (lemma, gender, plural, sl_singular, sl_plural, level),
+        )
+        if cur.rowcount:
+            added += 1
+    conn.commit()
+    return added
+
+
+def seed_family_cards(conn: sqlite3.Connection) -> int:
+    existing = conn.execute("SELECT 1 FROM family_cards LIMIT 1").fetchone()
+    if existing:
+        return 0
+    rows = conn.execute(
+        "SELECT id, gender FROM family_items ORDER BY id"
+    ).fetchall()
+    if not rows:
+        return 0
+    added = 0
+    for row in rows:
+        item_id = row["id"]
+        gender = row["gender"]
+        number_form = "plural" if gender == "pl" else "pair"
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO family_cards (item_id, mode, case_name, pronoun, number_form)
+            VALUES (?, 'noun', NULL, NULL, ?)
+            """,
+            (item_id, number_form),
+        )
+        if cur.rowcount:
+            added += 1
+        phrase_number = "plural" if gender == "pl" else "singular"
+        for case_name in FAMILY_CASES:
+            for pronoun in FAMILY_PRONOUNS:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO family_cards (item_id, mode, case_name, pronoun, number_form)
+                    VALUES (?, 'phrase', ?, ?, ?)
+                    """,
+                    (item_id, case_name, pronoun, phrase_number),
+                )
+                if cur.rowcount:
+                    added += 1
+    conn.commit()
+    return added
+
+
+def ensure_family_seed(conn: sqlite3.Connection) -> None:
+    seed_family_items(conn)
+    seed_family_cards(conn)
 
 
 def prompt_username() -> str:
@@ -651,6 +885,277 @@ def choose_number_cycle_numbers(
     return selected
 
 
+def fetch_family_cycle_count(conn: sqlite3.Connection, user_id: int) -> int:
+    row = conn.execute(
+        "SELECT cycles FROM family_cycles WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    return int(row["cycles"]) if row else 0
+
+
+def increment_family_cycle(conn: sqlite3.Connection, user_id: int) -> None:
+    current = fetch_family_cycle_count(conn, user_id)
+    if current == 0:
+        conn.execute(
+            """
+            INSERT INTO family_cycles (user_id, cycles, last_cycle_at)
+            VALUES (?, 1, ?)
+            """,
+            (user_id, now_iso()),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE family_cycles
+            SET cycles = ?, last_cycle_at = ?
+            WHERE user_id = ?
+            """,
+            (current + 1, now_iso(), user_id),
+        )
+    conn.commit()
+
+
+def global_family_accuracy(conn: sqlite3.Connection, user_id: int) -> Tuple[int, float]:
+    row = conn.execute(
+        """
+        SELECT
+            COALESCE(SUM(attempts), 0) AS att,
+            COALESCE(SUM(correct), 0) AS corr
+        FROM family_stats
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+    attempts = int(row["att"])
+    accuracy = (row["corr"] / attempts) if attempts else 0.0
+    return attempts, accuracy
+
+
+def build_family_card_payload(row: sqlite3.Row) -> Tuple[str, List[str], List[str]]:
+    gender = row["gender"]
+    mode = row["mode"]
+    if mode == "noun":
+        if row["number_form"] == "plural":
+            translation = row["sl_plural"]
+            labels = FAMILY_LABELS_NOUN_PLURAL
+            solutions = [f"die {row['plural']}"]
+            return translation, labels, solutions
+        article = FAMILY_GERMAN_ARTICLES[gender]
+        translation = f"{row['sl_singular']} / {row['sl_plural']}"
+        labels = FAMILY_LABELS_NOUN
+        solutions = [f"{article} {row['lemma']}", f"die {row['plural']}"]
+        return translation, labels, solutions
+
+    case_name = row["case_name"]
+    pronoun = row["pronoun"]
+    case_label = FAMILY_CASE_LABELS[case_name]
+    effective_gender = "pl" if gender == "pl" else gender
+    sl_pronoun = slovenian_possessive(pronoun, effective_gender)
+    sl_noun = row["sl_plural"] if gender == "pl" else row["sl_singular"]
+    translation = f"{case_label}: {sl_pronoun} {sl_noun}"
+    labels = FAMILY_LABELS_PHRASE
+    noun_form = row["plural"] if gender == "pl" else row["lemma"]
+    if case_name == "dative" and gender == "pl":
+        noun_form = german_dative_plural(noun_form)
+    determiner = german_possessive(pronoun, case_name, effective_gender)
+    solutions = [f"{determiner} {noun_form}"]
+    return translation, labels, solutions
+
+
+def fetch_family_cards_with_stats(
+    conn: sqlite3.Connection,
+    user_id: int,
+    levels: Sequence[str],
+    modes: Sequence[str],
+    cases: Optional[Sequence[str]] = None,
+) -> List[Dict]:
+    if not levels or not modes:
+        return []
+    params: List[object] = [user_id]
+    level_placeholders = ", ".join("?" * len(levels))
+    mode_placeholders = ", ".join("?" * len(modes))
+    params.extend(levels)
+    params.extend(modes)
+    query = f"""
+    SELECT
+        c.id AS card_id,
+        c.mode,
+        c.case_name,
+        c.pronoun,
+        c.number_form,
+        i.lemma,
+        i.gender,
+        i.plural,
+        i.sl_singular,
+        i.sl_plural,
+        i.level,
+        COALESCE(s.attempts, 0) AS attempts,
+        COALESCE(s.correct, 0) AS correct,
+        COALESCE(s.wrong, 0) AS wrong,
+        COALESCE(s.reveals, 0) AS reveals,
+        COALESCE(s.correct_streak, 0) AS streak,
+        s.last_seen AS last_seen
+    FROM family_cards c
+    JOIN family_items i ON i.id = c.item_id
+    LEFT JOIN family_stats s
+      ON s.card_id = c.id AND s.user_id = ?
+    WHERE i.level IN ({level_placeholders})
+      AND c.mode IN ({mode_placeholders})
+    """
+    if cases and "phrase" in modes:
+        case_placeholders = ", ".join("?" * len(cases))
+        query += f" AND (c.mode != 'phrase' OR c.case_name IN ({case_placeholders}))"
+        params.extend(cases)
+    rows = conn.execute(query, tuple(params)).fetchall()
+    items: List[Dict] = []
+    for row in rows:
+        translation, labels, solutions = build_family_card_payload(row)
+        attempts = row["attempts"]
+        wrong = row["wrong"]
+        accuracy = (attempts - wrong) / attempts if attempts else 0.0
+        item = {
+            "id": row["card_id"],
+            "translation": translation,
+            "labels": labels,
+            "solutions": solutions,
+            "attempts": attempts,
+            "correct": row["correct"],
+            "wrong": wrong,
+            "reveals": row["reveals"],
+            "streak": row["streak"],
+            "last_seen": row["last_seen"],
+            "accuracy": accuracy,
+        }
+        item["difficulty"] = compute_difficulty(item)
+        items.append(item)
+    return items
+
+
+def fetch_family_results(
+    conn: sqlite3.Connection,
+    user_id: int,
+    levels: Sequence[str],
+    modes: Sequence[str],
+    cases: Optional[Sequence[str]] = None,
+) -> List[Dict]:
+    if not levels or not modes:
+        return []
+    params: List[object] = [user_id]
+    level_placeholders = ", ".join("?" * len(levels))
+    mode_placeholders = ", ".join("?" * len(modes))
+    params.extend(levels)
+    params.extend(modes)
+    query = f"""
+    SELECT
+        c.id AS card_id,
+        c.mode,
+        c.case_name,
+        c.pronoun,
+        c.number_form,
+        i.lemma,
+        i.gender,
+        i.plural,
+        i.sl_singular,
+        i.sl_plural,
+        i.level,
+        s.attempts,
+        s.correct,
+        s.wrong,
+        s.reveals,
+        s.correct_streak,
+        s.last_seen
+    FROM family_stats s
+    JOIN family_cards c ON c.id = s.card_id
+    JOIN family_items i ON i.id = c.item_id
+    WHERE s.user_id = ?
+      AND i.level IN ({level_placeholders})
+      AND c.mode IN ({mode_placeholders})
+    """
+    if cases and "phrase" in modes:
+        case_placeholders = ", ".join("?" * len(cases))
+        query += f" AND (c.mode != 'phrase' OR c.case_name IN ({case_placeholders}))"
+        params.extend(cases)
+    rows = conn.execute(query, tuple(params)).fetchall()
+    results: List[Dict] = []
+    for row in rows:
+        translation, labels, solutions = build_family_card_payload(row)
+        results.append(
+            {
+                "id": row["card_id"],
+                "translation": translation,
+                "labels": labels,
+                "solutions": solutions,
+                "attempts": row["attempts"],
+                "correct": row["correct"],
+                "wrong": row["wrong"],
+                "reveals": row["reveals"],
+                "streak": row["correct_streak"],
+            }
+        )
+    return results
+
+
+def fetch_family_card(conn: sqlite3.Connection, card_id: int) -> Optional[sqlite3.Row]:
+    row = conn.execute(
+        """
+        SELECT
+            c.id AS card_id,
+            c.mode,
+            c.case_name,
+            c.pronoun,
+            c.number_form,
+            i.lemma,
+            i.gender,
+            i.plural,
+            i.sl_singular,
+            i.sl_plural,
+            i.level
+        FROM family_cards c
+        JOIN family_items i ON i.id = c.item_id
+        WHERE c.id = ?
+        """,
+        (card_id,),
+    ).fetchone()
+    return row
+
+
+def choose_family_cycle_items(items: List[Dict], adaptive: bool) -> List[Dict]:
+    if not items:
+        return []
+    shuffled = items[:]
+    random.shuffle(shuffled)
+    target_size = min(FAMILY_CYCLE_SIZE, len(shuffled))
+
+    if not adaptive:
+        if len(shuffled) <= target_size:
+            return shuffled
+        return random.sample(shuffled, target_size)
+
+    hard_items = [
+        item
+        for item in shuffled
+        if item["attempts"] == 0
+        or item["accuracy"] < HIGH_ACCURACY_THRESHOLD
+        or item["streak"] < 3
+    ]
+    easy_items = [item for item in shuffled if item not in hard_items]
+
+    easy_count = max(1, int(target_size * EASY_REVIEW_FRACTION))
+    hard_count = max(0, target_size - easy_count)
+    selected = hard_items[:hard_count]
+    if easy_items:
+        selected += random.sample(easy_items, min(len(easy_items), easy_count))
+
+    if len(selected) < target_size:
+        remaining_pool = hard_items[hard_count:] + [
+            item for item in easy_items if item not in selected
+        ]
+        selected += remaining_pool[: target_size - len(selected)]
+
+    selected.sort(key=lambda i: i["difficulty"], reverse=True)
+    return selected
+
+
 def choose_cycle_items(items: List[Dict], adaptive: bool) -> List[Dict]:
     if not items:
         return []
@@ -684,6 +1189,8 @@ def get_labels(word_type: str, metadata: Dict) -> List[str]:
         return stored
     if word_type == "number":
         return NUMBER_LABELS
+    if word_type == "family":
+        return FAMILY_LABELS_PHRASE
     if word_type == "verb":
         return VERB_LABELS
     return NOUN_LABELS
@@ -903,6 +1410,67 @@ def update_number_progress(
         (
             user_id,
             number,
+            now,
+            correct_value,
+            reveal_value,
+            json.dumps(list(answers)),
+            cycle_number,
+        ),
+    )
+    conn.commit()
+
+
+def update_family_progress(
+    conn: sqlite3.Connection,
+    user_id: int,
+    card_id: int,
+    correct: bool,
+    revealed: bool,
+    answers: Sequence[str],
+    cycle_number: int,
+) -> None:
+    now = now_iso()
+    result_label = "correct" if correct else ("revealed" if revealed else "wrong")
+    correct_value = 1 if correct else 0
+    wrong_value = 0 if correct else 1
+    reveal_value = 1 if revealed else 0
+    conn.execute(
+        """
+        INSERT INTO family_stats (
+            user_id, card_id, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+        )
+        VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, card_id) DO UPDATE SET
+            attempts = family_stats.attempts + 1,
+            correct = family_stats.correct + excluded.correct,
+            wrong = family_stats.wrong + excluded.wrong,
+            reveals = family_stats.reveals + excluded.reveals,
+            correct_streak = CASE
+                WHEN excluded.last_result = 'correct' THEN family_stats.correct_streak + 1
+                ELSE 0
+            END,
+            last_result = excluded.last_result,
+            last_seen = excluded.last_seen
+        """,
+        (
+            user_id,
+            card_id,
+            correct_value,
+            wrong_value,
+            reveal_value,
+            1 if correct else 0,
+            result_label,
+            now,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO family_attempts (user_id, card_id, asked_at, was_correct, was_revealed, answers_json, cycle_number)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            card_id,
             now,
             correct_value,
             reveal_value,

@@ -172,6 +172,38 @@ body {
   color: inherit;
 }
 
+.family-config {
+  margin: 1rem 0 0.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.family-section {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #9ab0d1;
+}
+
+.family-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.family-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+}
+
 .component-toggle {
   display: grid;
   gap: 0.4rem;

@@ -22,6 +22,22 @@ const NUMBER_COMPONENTS_STORAGE_KEY = 'numberComponents'
 const NUMBER_COMPONENTS_TOGGLE_KEY = 'numberComponentsEnabled'
 const NUMBER_MAX_STORAGE_KEY = 'numberMax'
 const NUMBER_CYCLE_SIZE_STORAGE_KEY = 'numberCycleSize'
+const FAMILY_LEVELS = [
+  { key: 'A1', label: 'A1 (osnove)' },
+  { key: 'A2', label: 'A2 (razširjeno)' },
+]
+const FAMILY_CASES = [
+  { key: 'nominative', label: 'Nominativ' },
+  { key: 'accusative', label: 'Akuzativ' },
+  { key: 'dative', label: 'Dativ' },
+]
+const FAMILY_MODES = [
+  { key: 'noun', label: 'Samostalniki + plural' },
+  { key: 'phrase', label: 'Fraze (moj/tvoj/...)' },
+]
+const FAMILY_LEVELS_STORAGE_KEY = 'familyLevels'
+const FAMILY_CASES_STORAGE_KEY = 'familyCases'
+const FAMILY_MODES_STORAGE_KEY = 'familyModes'
 
 const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
   let cleaned = text.trim().toLowerCase().replace(/ß/g, 'ss')
@@ -71,6 +87,9 @@ function App() {
   const [selectedNumberComponents, setSelectedNumberComponents] = useState(
     NUMBER_COMPONENTS.map((component) => component.key),
   )
+  const [familyLevels, setFamilyLevels] = useState(['A1'])
+  const [familyCases, setFamilyCases] = useState(['nominative'])
+  const [familyModes, setFamilyModes] = useState(['noun', 'phrase'])
   const [cycle, setCycle] = useState(null)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [answers, setAnswers] = useState([])
@@ -139,6 +158,18 @@ function App() {
   }, [selectedUser, selectedModule])
 
   useEffect(() => {
+    if (!familyLevels.includes('A2')) {
+      if (familyCases.length !== 1 || familyCases[0] !== 'nominative') {
+        setFamilyCases(['nominative'])
+      }
+      return
+    }
+    if (familyCases.length === 0) {
+      setFamilyCases(['nominative'])
+    }
+  }, [familyLevels, familyCases])
+
+  useEffect(() => {
     try {
       const storedEnabled = localStorage.getItem(NUMBER_COMPONENTS_TOGGLE_KEY)
       if (storedEnabled !== null) {
@@ -167,6 +198,39 @@ function App() {
           setNumberCycleSize(parsedSize)
         }
       }
+      const storedFamilyLevels = localStorage.getItem(FAMILY_LEVELS_STORAGE_KEY)
+      if (storedFamilyLevels) {
+        const parsedLevels = JSON.parse(storedFamilyLevels)
+        if (Array.isArray(parsedLevels)) {
+          const allowed = new Set(FAMILY_LEVELS.map((level) => level.key))
+          const filtered = parsedLevels.filter((item) => allowed.has(item))
+          if (filtered.length) {
+            setFamilyLevels(filtered)
+          }
+        }
+      }
+      const storedFamilyCases = localStorage.getItem(FAMILY_CASES_STORAGE_KEY)
+      if (storedFamilyCases) {
+        const parsedCases = JSON.parse(storedFamilyCases)
+        if (Array.isArray(parsedCases)) {
+          const allowed = new Set(FAMILY_CASES.map((item) => item.key))
+          const filtered = parsedCases.filter((item) => allowed.has(item))
+          if (filtered.length) {
+            setFamilyCases(filtered)
+          }
+        }
+      }
+      const storedFamilyModes = localStorage.getItem(FAMILY_MODES_STORAGE_KEY)
+      if (storedFamilyModes) {
+        const parsedModes = JSON.parse(storedFamilyModes)
+        if (Array.isArray(parsedModes)) {
+          const allowed = new Set(FAMILY_MODES.map((item) => item.key))
+          const filtered = parsedModes.filter((item) => allowed.has(item))
+          if (filtered.length) {
+            setFamilyModes(filtered)
+          }
+        }
+      }
     } catch (err) {
       console.error('Failed to load number components from storage', err)
     }
@@ -181,10 +245,21 @@ function App() {
       )
       localStorage.setItem(NUMBER_MAX_STORAGE_KEY, String(numberMax))
       localStorage.setItem(NUMBER_CYCLE_SIZE_STORAGE_KEY, String(numberCycleSize))
+      localStorage.setItem(FAMILY_LEVELS_STORAGE_KEY, JSON.stringify(familyLevels))
+      localStorage.setItem(FAMILY_CASES_STORAGE_KEY, JSON.stringify(familyCases))
+      localStorage.setItem(FAMILY_MODES_STORAGE_KEY, JSON.stringify(familyModes))
     } catch (err) {
       console.error('Failed to save number components to storage', err)
     }
-  }, [useNumberComponents, selectedNumberComponents, numberMax, numberCycleSize])
+  }, [
+    useNumberComponents,
+    selectedNumberComponents,
+    numberMax,
+    numberCycleSize,
+    familyLevels,
+    familyCases,
+    familyModes,
+  ])
 
   useEffect(() => {
     if (currentQuestion) {
@@ -367,7 +442,7 @@ function App() {
   }
 
   const toggleModuleItems = async (wordType) => {
-    if (wordType === 'number') return
+    if (wordType === 'number' || wordType === 'family') return
     if (moduleItemsType === wordType) {
       setModuleItemsType(null)
       setModuleItems([])
@@ -399,6 +474,9 @@ function App() {
     let maxNumberPayload = null
     let cycleSizePayload = null
     let numberComponentsPayload = null
+    let familyLevelsPayload = null
+    let familyCasesPayload = null
+    let familyModesPayload = null
     if (selectedModule === 'number') {
       const parsed = Number(numberMax)
       if (!Number.isInteger(parsed) || parsed < 0) {
@@ -424,6 +502,24 @@ function App() {
         numberComponentsPayload = selectedNumberComponents
       }
     }
+    if (selectedModule === 'family') {
+      if (familyLevels.length === 0) {
+        setError('Izberi vsaj eno stopnjo.')
+        return
+      }
+      if (familyModes.length === 0) {
+        setError('Izberi vsaj en način vadbe.')
+        return
+      }
+      const effectiveCases = familyLevels.includes('A2') ? familyCases : ['nominative']
+      if (familyModes.includes('phrase') && effectiveCases.length === 0) {
+        setError('Izberi vsaj en sklon.')
+        return
+      }
+      familyLevelsPayload = familyLevels
+      familyModesPayload = familyModes
+      familyCasesPayload = effectiveCases
+    }
     setIsBusy(true)
     setError('')
     try {
@@ -440,6 +536,15 @@ function App() {
       }
       if (numberComponentsPayload) {
         body.number_components = numberComponentsPayload
+      }
+      if (familyLevelsPayload) {
+        body.family_levels = familyLevelsPayload
+      }
+      if (familyCasesPayload) {
+        body.family_cases = familyCasesPayload
+      }
+      if (familyModesPayload) {
+        body.family_modes = familyModesPayload
       }
       const data = await apiFetch('/cycles', {
         method: 'POST',
@@ -483,8 +588,9 @@ function App() {
 
   const answersMatchSolution = () => {
     if (!currentQuestion?.solution) return false
-    const allowUmlautFallback = selectedModule === 'number'
-    const collapseSpaces = selectedModule !== 'number'
+    const isNumberModule = selectedModule === 'number'
+    const allowUmlautFallback = selectedModule === 'number' || selectedModule === 'family'
+    const collapseSpaces = !isNumberModule
     const normalizedAnswers = answers.map((value) =>
       normalizeText(value || '', { allowUmlautFallback, collapseSpaces }),
     )
@@ -602,6 +708,34 @@ function App() {
     })
   }
 
+  const toggleFamilyLevel = (key) => {
+    setFamilyLevels((prev) => {
+      if (prev.includes(key)) {
+        return prev.filter((item) => item !== key)
+      }
+      return [...prev, key]
+    })
+  }
+
+  const toggleFamilyCase = (key) => {
+    if (key !== 'nominative' && !familyLevels.includes('A2')) return
+    setFamilyCases((prev) => {
+      if (prev.includes(key)) {
+        return prev.filter((item) => item !== key)
+      }
+      return [...prev, key]
+    })
+  }
+
+  const toggleFamilyMode = (key) => {
+    setFamilyModes((prev) => {
+      if (prev.includes(key)) {
+        return prev.filter((item) => item !== key)
+      }
+      return [...prev, key]
+    })
+  }
+
   const handleCreateItem = async () => {
     if (!moduleItemsType) return
     setItemActionLoading(true)
@@ -631,6 +765,7 @@ function App() {
   const openResultsModal = async (wordType) => {
     if (!selectedUser) return
     let maxNumberParam = null
+    let familyQuery = null
     if (wordType === 'number') {
       const parsed = Number(numberMax)
       if (!Number.isInteger(parsed) || parsed < 0) {
@@ -643,6 +778,29 @@ function App() {
       }
       maxNumberParam = parsed
     }
+    if (wordType === 'family') {
+      if (familyLevels.length === 0) {
+        setError('Izberi vsaj eno stopnjo.')
+        return
+      }
+      if (familyModes.length === 0) {
+        setError('Izberi vsaj en način vadbe.')
+        return
+      }
+      const effectiveCases = familyLevels.includes('A2') ? familyCases : ['nominative']
+      if (familyModes.includes('phrase') && effectiveCases.length === 0) {
+        setError('Izberi vsaj en sklon.')
+        return
+      }
+      const params = new URLSearchParams({
+        include_solution: 'true',
+        user_id: String(selectedUser.id),
+      })
+      familyLevels.forEach((level) => params.append('levels', level))
+      effectiveCases.forEach((item) => params.append('cases', item))
+      familyModes.forEach((mode) => params.append('modes', mode))
+      familyQuery = params.toString()
+    }
     setShowResultsModal(true)
     setResultsWordType(wordType)
     setLoadingResults(true)
@@ -652,6 +810,8 @@ function App() {
       const endpoint =
         wordType === 'number'
           ? `/numbers/results?include_solution=true&user_id=${selectedUser.id}&max_number=${maxNumberParam}`
+          : wordType === 'family'
+            ? `/family/results?${familyQuery}`
           : `/items?word_type=${wordType}&include_solution=true&user_id=${selectedUser.id}`
       const data = await apiFetch(endpoint)
       const sorted = [...data].sort((a, b) => {
@@ -791,7 +951,9 @@ function App() {
         ? 'Samostalnik'
         : selectedModule === 'verb'
           ? 'Nepravilni glagol'
-          : 'Število'
+          : selectedModule === 'number'
+            ? 'Število'
+            : 'Družina'
 
     return (
       <div className="question-card">
@@ -891,7 +1053,7 @@ function App() {
       <header>
         <div>
           <p className="kicker">Nemški trener</p>
-          <h1>Samostalniki, nepravilni glagoli & števila</h1>
+          <h1>Samostalniki, nepravilni glagoli, števila & družina</h1>
         </div>
         <div className="header-actions">
           <div className="api-indicator">
@@ -972,6 +1134,8 @@ function App() {
           <div className="pill-list">
             {modules.map((module) => {
               const isNumberModule = module.type === 'number'
+              const isFamilyModule = module.type === 'family'
+              const isSpecialModule = isNumberModule || isFamilyModule
               return (
                 <div key={module.type} className="module-row">
                   <button
@@ -980,10 +1144,10 @@ function App() {
                   >
                     <strong>
                       {module.label}
-                      {!isNumberModule && ` (${module.count})`}
+                      {!isSpecialModule && ` (${module.count})`}
                     </strong>
                   </button>
-                  {!isNumberModule && (
+                  {!isSpecialModule && (
                     <>
                       <button
                         type="button"
@@ -1011,7 +1175,7 @@ function App() {
                       </button>
                     </>
                   )}
-                  {isNumberModule && (
+                  {isSpecialModule && (
                     <>
                       <button
                         type="button"
@@ -1021,7 +1185,11 @@ function App() {
                       >
                         Rezultati
                       </button>
-                      <span className="hint">Razpon določiš ob zagonu.</span>
+                      <span className="hint">
+                        {isNumberModule
+                          ? 'Razpon določiš ob zagonu.'
+                          : 'Filtre določiš ob zagonu.'}
+                      </span>
                     </>
                   )}
                 </div>
@@ -1116,6 +1284,62 @@ function App() {
               </p>
             </div>
           )}
+          {selectedModule === 'family' && (
+            <div className="family-config">
+              <div className="family-section">
+                <p className="section-title">Stopnja</p>
+                <div className="family-options">
+                  {FAMILY_LEVELS.map((level) => (
+                    <label key={level.key} className="family-option">
+                      <input
+                        type="checkbox"
+                        checked={familyLevels.includes(level.key)}
+                        onChange={() => toggleFamilyLevel(level.key)}
+                      />
+                      <span>{level.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="family-section">
+                <p className="section-title">Način vadbe</p>
+                <div className="family-options">
+                  {FAMILY_MODES.map((mode) => (
+                    <label key={mode.key} className="family-option">
+                      <input
+                        type="checkbox"
+                        checked={familyModes.includes(mode.key)}
+                        onChange={() => toggleFamilyMode(mode.key)}
+                      />
+                      <span>{mode.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="family-section">
+                <p className="section-title">Skloni</p>
+                <div className="family-options">
+                  {FAMILY_CASES.map((item) => {
+                    const disabled = item.key !== 'nominative' && !familyLevels.includes('A2')
+                    return (
+                      <label key={item.key} className="family-option">
+                        <input
+                          type="checkbox"
+                          checked={familyCases.includes(item.key)}
+                          onChange={() => toggleFamilyCase(item.key)}
+                          disabled={disabled}
+                        />
+                        <span>{item.label}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+                {!familyLevels.includes('A2') && (
+                  <span className="hint">Akuzativ in dativ se odpreta z A2.</span>
+                )}
+              </div>
+            </div>
+          )}
           <button
             className="btn primary full"
             onClick={handleStartCycle}
@@ -1152,7 +1376,9 @@ function App() {
                   ? 'samostalniki'
                   : stats.word_type === 'verb'
                     ? 'glagoli'
-                    : 'števila'}
+                    : stats.word_type === 'number'
+                      ? 'števila'
+                      : 'družina'}
                 )
               </h3>
               <ul>
@@ -1407,7 +1633,9 @@ function App() {
                   ? 'Samostalniki'
                   : resultsWordType === 'verb'
                     ? 'Nepravilni glagoli'
-                    : 'Števila'}
+                    : resultsWordType === 'number'
+                      ? 'Števila'
+                      : 'Družina'}
                 )
               </h3>
               <button type="button" className="close-modal" onClick={() => setShowResultsModal(false)}>

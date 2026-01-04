@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 import learn
 
-WordType = Literal["noun", "verb", "number"]
+WordType = Literal["noun", "verb", "number", "family"]
 NumberComponent = Literal[
     "basic",
     "teens",
@@ -30,6 +30,9 @@ NumberComponent = Literal[
     "thousands",
     "composite_thousands",
 ]
+FamilyMode = Literal["noun", "phrase"]
+FamilyCase = Literal["nominative", "accusative", "dative"]
+FamilyLevel = Literal["A1", "A2"]
 
 app = FastAPI(
     title="German Trainer API",
@@ -73,6 +76,7 @@ def _init_database() -> None:
     conn = _connect_db()
     conn.row_factory = sqlite3.Row
     learn.ensure_schema(conn)
+    learn.ensure_family_seed(conn)
     conn.close()
 
 
@@ -119,6 +123,9 @@ class CycleRequest(BaseModel):
     max_number: Optional[int] = Field(default=None, ge=0)
     cycle_size: Optional[int] = Field(default=None, ge=1)
     number_components: Optional[List[NumberComponent]] = None
+    family_levels: Optional[List[FamilyLevel]] = None
+    family_cases: Optional[List[FamilyCase]] = None
+    family_modes: Optional[List[FamilyMode]] = None
 
 
 class CycleItem(BaseModel):
@@ -235,8 +242,11 @@ def get_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> UserOu
 
 @app.get("/modules", response_model=List[ModuleOut])
 def list_modules(conn: sqlite3.Connection = Depends(get_db)) -> List[ModuleOut]:
+    learn.ensure_family_seed(conn)
     rows = conn.execute("SELECT type, COUNT(*) AS cnt FROM items GROUP BY type").fetchall()
     counts = {row["type"]: row["cnt"] for row in rows}
+    family_count_row = conn.execute("SELECT COUNT(*) AS cnt FROM family_items").fetchone()
+    family_count = family_count_row["cnt"] if family_count_row else 0
     return [
         ModuleOut(
             type="noun",
@@ -255,6 +265,12 @@ def list_modules(conn: sqlite3.Connection = Depends(get_db)) -> List[ModuleOut]:
             label="Števila",
             description="Zapis števil po nemško.",
             count=0,
+        ),
+        ModuleOut(
+            type="family",
+            label="Družina",
+            description="Družinski člani, plural in fraze.",
+            count=family_count,
         ),
     ]
 
@@ -315,6 +331,51 @@ def start_cycle(payload: CycleRequest, conn: sqlite3.Connection = Depends(get_db
             items=questions,
         )
 
+    if payload.word_type == "family":
+        learn.ensure_family_seed(conn)
+        levels = payload.family_levels or ["A1"]
+        modes = payload.family_modes or ["noun", "phrase"]
+        cases = payload.family_cases or ["nominative"]
+        if not levels:
+            raise HTTPException(status_code=400, detail="Izberi vsaj eno stopnjo.")
+        if not modes:
+            raise HTTPException(status_code=400, detail="Izberi vsaj en način vadbe.")
+        if "A2" not in levels:
+            cases = ["nominative"]
+        if "phrase" in modes and not cases:
+            raise HTTPException(status_code=400, detail="Izberi vsaj en sklon.")
+        cycle_index = learn.fetch_family_cycle_count(conn, payload.user_id) + 1
+        total_attempts, accuracy = learn.global_family_accuracy(conn, payload.user_id)
+        adaptive = (
+            cycle_index > learn.ADAPTIVE_AFTER_CYCLES
+            or (total_attempts >= learn.MIN_ATTEMPTS_FOR_ADAPTIVE and accuracy >= learn.HIGH_ACCURACY_THRESHOLD)
+        )
+        items = learn.fetch_family_cards_with_stats(conn, payload.user_id, levels, modes, cases)
+        if not items:
+            raise HTTPException(status_code=404, detail="Ni kartic za izbrane nastavitve.")
+        selected = learn.choose_family_cycle_items(items, adaptive)
+        questions = []
+        for item in selected:
+            question = CycleItem(
+                id=item["id"],
+                translation=item["translation"],
+                labels=item["labels"],
+                attempts=item["attempts"],
+                accuracy=item["accuracy"],
+                streak=item["streak"],
+                difficulty=item["difficulty"],
+                solution=item["solutions"] if payload.include_solutions else None,
+            )
+            questions.append(question)
+        mode_note = "adaptivni način" if adaptive else "naključni način"
+        return CycleResponse(
+            cycle_number=cycle_index,
+            adaptive=adaptive,
+            mode=mode_note,
+            total_items=len(questions),
+            items=questions,
+        )
+
     cycle_index = learn.fetch_cycle_count(conn, payload.user_id, payload.word_type) + 1
     total_attempts, accuracy = learn.global_accuracy(conn, payload.user_id, payload.word_type)
     adaptive = (
@@ -358,6 +419,8 @@ def complete_cycle(payload: CycleCompleteRequest, conn: sqlite3.Connection = Dep
     ensure_user(conn, payload.user_id)
     if payload.word_type == "number":
         learn.increment_number_cycle(conn, payload.user_id)
+    elif payload.word_type == "family":
+        learn.increment_family_cycle(conn, payload.user_id)
     else:
         learn.increment_cycle(conn, payload.user_id, payload.word_type)
     return {"status": "ok"}
@@ -383,6 +446,29 @@ def submit_attempt(payload: AttemptRequest, conn: sqlite3.Connection = Depends(g
             conn=conn,
             user_id=payload.user_id,
             number=number,
+            correct=effective_correct,
+            revealed=payload.revealed,
+            answers=payload.answers,
+            cycle_number=cycle_number,
+        )
+        solution_payload = solutions if (payload.show_solution or payload.revealed) else None
+        return AttemptResponse(correct=effective_correct, revealed=payload.revealed, solution=solution_payload)
+
+    if payload.word_type == "family":
+        learn.ensure_family_seed(conn)
+        card = learn.fetch_family_card(conn, payload.item_id)
+        if not card:
+            raise HTTPException(status_code=404, detail="Vnos ne obstaja.")
+        _, _, solutions = learn.build_family_card_payload(card)
+        correct = learn.check_answers(payload.answers, solutions, allow_umlaut_fallback=True)
+        effective_correct = bool(correct and not payload.revealed)
+        cycle_number = payload.cycle_number or (
+            learn.fetch_family_cycle_count(conn, payload.user_id) + 1
+        )
+        learn.update_family_progress(
+            conn=conn,
+            user_id=payload.user_id,
+            card_id=payload.item_id,
             correct=effective_correct,
             revealed=payload.revealed,
             answers=payload.answers,
@@ -427,6 +513,8 @@ def browse_items(
 ) -> List[ItemOut]:
     if word_type == "number":
         raise HTTPException(status_code=400, detail="Števil ni mogoče brskati kot seznam vnosov.")
+    if word_type == "family":
+        raise HTTPException(status_code=400, detail="Družinskih kartic ni mogoče brskati kot seznam vnosov.")
     query = """
     SELECT
         items.id,
@@ -508,6 +596,45 @@ def number_results(
     return items
 
 
+@app.get("/family/results", response_model=List[ItemOut])
+def family_results(
+    user_id: int = Query(...),
+    include_solution: bool = Query(default=False),
+    levels: Optional[List[FamilyLevel]] = Query(default=None),
+    cases: Optional[List[FamilyCase]] = Query(default=None),
+    modes: Optional[List[FamilyMode]] = Query(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> List[ItemOut]:
+    ensure_user(conn, user_id)
+    learn.ensure_family_seed(conn)
+    levels = levels or ["A1", "A2"]
+    modes = modes or ["noun", "phrase"]
+    cases = cases or ["nominative"]
+    if "A2" not in levels:
+        cases = ["nominative"]
+    if "phrase" in modes and not cases:
+        raise HTTPException(status_code=400, detail="Izberi vsaj en sklon.")
+    results = learn.fetch_family_results(conn, user_id, levels, modes, cases)
+    items: List[ItemOut] = []
+    for row in results:
+        items.append(
+            ItemOut(
+                id=row["id"],
+                type="family",
+                translation=row["translation"],
+                metadata={},
+                labels=row["labels"],
+                solution=row["solutions"] if include_solution else None,
+                attempts=row["attempts"],
+                correct=row["correct"],
+                wrong=row["wrong"],
+                reveals=row["reveals"],
+                streak=row["streak"],
+            )
+        )
+    return items
+
+
 @app.get("/items/{item_id}", response_model=ItemOut)
 def item_detail(
     item_id: int,
@@ -559,6 +686,35 @@ def user_stats(
             accuracy=accuracy,
             cycle_count=cycle_count,
         )
+    if word_type == "family":
+        stats_row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(attempts), 0) AS attempts,
+                COALESCE(SUM(correct), 0) AS correct,
+                COALESCE(SUM(wrong), 0) AS wrong,
+                COALESCE(SUM(reveals), 0) AS reveals
+            FROM family_stats
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        attempts = stats_row["attempts"] or 0
+        correct = stats_row["correct"] or 0
+        wrong = stats_row["wrong"] or 0
+        reveals = stats_row["reveals"] or 0
+        accuracy = (correct / attempts) if attempts else 0.0
+        cycle_count = learn.fetch_family_cycle_count(conn, user_id)
+        return StatsOut(
+            user_id=user_id,
+            word_type=word_type,
+            attempts=attempts,
+            correct=correct,
+            wrong=wrong,
+            reveals=reveals,
+            accuracy=accuracy,
+            cycle_count=cycle_count,
+        )
     stats_row = conn.execute(
         """
         SELECT
@@ -598,6 +754,8 @@ async def import_csv_endpoint(
 ) -> ImportResult:
     if word_type == "number":
         raise HTTPException(status_code=400, detail="Uvoz CSV ni podprt za števila.")
+    if word_type == "family":
+        raise HTTPException(status_code=400, detail="Uvoz CSV ni podprt za družino.")
     if file.content_type not in {"text/csv", "application/vnd.ms-excel", "application/octet-stream"}:
         raise HTTPException(status_code=400, detail="Pričakovana je CSV datoteka.")
     raw = await file.read()
@@ -670,6 +828,8 @@ def delete_item(
 def create_item(payload: ItemCreate, conn: sqlite3.Connection = Depends(get_db)) -> ItemOut:
     if payload.type == "number":
         raise HTTPException(status_code=400, detail="Števil ni mogoče dodajati ročno.")
+    if payload.type == "family":
+        raise HTTPException(status_code=400, detail="Družine ni mogoče dodajati ročno.")
     translation = payload.translation.strip()
     if not translation:
         raise HTTPException(status_code=400, detail="Prevod ne sme biti prazen.")
