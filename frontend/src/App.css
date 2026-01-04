@@ -105,6 +105,34 @@ body {
   color: rgba(255, 255, 255, 0.6);
 }
 
+.user-pill-main {
+  display: grid;
+  gap: 0.2rem;
+  flex: 1;
+}
+
+.user-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+
+.user-level-select {
+  display: grid;
+  gap: 0.2rem;
+  align-items: center;
+}
+
+.user-level-select select {
+  padding: 0.25rem 0.4rem;
+  border-radius: 0.45rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 0.75rem;
+}
+
 .pill .remove-btn {
   margin-left: auto;
   background: transparent;
@@ -732,6 +760,58 @@ body {
 
 
 .collection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.proposal-section {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.proposal-filters {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  align-items: center;
+}
+
+.proposal-filters input,
+.proposal-filters select {
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 0.85rem;
+}
+
+.proposal-filters .btn {
+  justify-self: start;
+}
+
+.proposal-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.proposal-card {
+  border-radius: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.8rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.proposal-main {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.proposal-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;

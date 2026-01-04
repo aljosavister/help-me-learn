@@ -262,6 +262,26 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(type, keyword)
         );
 
+        CREATE TABLE IF NOT EXISTS item_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            proposer_user_id INTEGER NOT NULL,
+            item_id INTEGER,
+            proposal_type TEXT NOT NULL CHECK(proposal_type IN ('create', 'update', 'delete')),
+            status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')),
+            word_type TEXT NOT NULL CHECK(word_type IN ('noun', 'verb')),
+            keyword TEXT NOT NULL,
+            translation TEXT NOT NULL,
+            solution_json TEXT NOT NULL,
+            metadata_json TEXT,
+            proposed_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            reviewer_user_id INTEGER,
+            review_notes TEXT,
+            FOREIGN KEY (proposer_user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (reviewer_user_id) REFERENCES users(id) ON DELETE SET NULL,
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS user_stats (
             user_id INTEGER NOT NULL,
             entry_id INTEGER NOT NULL,
@@ -551,7 +571,27 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()]
+    if "level" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN level INTEGER NOT NULL DEFAULT 0")
+    ensure_admin_user(conn)
     conn.commit()
+
+
+def ensure_admin_user(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT id, level FROM users WHERE name = ?",
+        ("admin",),
+    ).fetchone()
+    if row:
+        current_level = row[1] if len(row) > 1 else 0
+        if current_level < 2:
+            conn.execute("UPDATE users SET level = 2 WHERE id = ?", (row[0],))
+        return
+    conn.execute(
+        "INSERT INTO users (name, created_at, level) VALUES (?, ?, 2)",
+        ("admin", now_iso()),
+    )
 
 
 def parse_csv_content(text: str) -> List[List[str]]:
@@ -762,8 +802,8 @@ def get_or_create_user(conn: sqlite3.Connection, name: str) -> int:
     if row:
         return int(row[0])
     cur = conn.execute(
-        "INSERT INTO users (name, created_at) VALUES (?, ?)",
-        (name, now_iso()),
+        "INSERT INTO users (name, created_at, level) VALUES (?, ?, ?)",
+        (name, now_iso(), 0),
     )
     conn.commit()
     return int(cur.lastrowid)

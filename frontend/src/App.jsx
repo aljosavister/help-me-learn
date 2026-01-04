@@ -46,7 +46,19 @@ const FAMILY_CASES_STORAGE_KEY = 'familyCases'
 const FAMILY_MODES_STORAGE_KEY = 'familyModes'
 const FAMILY_INCLUDE_PLURAL_KEY = 'familyIncludePlural'
 const ACTIVE_COLLECTION_STORAGE_KEY = 'activeCollectionVersionId'
-const ANONYMOUS_USER = { id: 0, name: 'Anonimno' }
+const ANONYMOUS_USER = { id: 0, name: 'Anonimno', level: 0 }
+const MODERATOR_LEVEL = 1
+const ADMIN_LEVEL = 2
+const USER_LEVEL_LABELS = {
+  0: 'Uporabnik',
+  1: 'Urednik',
+  2: 'Admin',
+}
+const USER_LEVEL_OPTIONS = [
+  { value: 0, label: 'Uporabnik' },
+  { value: 1, label: 'Urednik' },
+  { value: 2, label: 'Admin' },
+]
 
 const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
   let cleaned = text.trim().toLowerCase().replace(/ß/g, 'ss')
@@ -167,13 +179,26 @@ function App() {
   const [editingItemId, setEditingItemId] = useState(null)
   const [editValues, setEditValues] = useState({ translation: '', forms: [] })
   const [itemActionLoading, setItemActionLoading] = useState(false)
+  const [itemProposals, setItemProposals] = useState([])
+  const [isLoadingProposals, setIsLoadingProposals] = useState(false)
+  const [proposalActionLoading, setProposalActionLoading] = useState(false)
+  const [isUpdatingUserLevel, setIsUpdatingUserLevel] = useState(false)
+  const [proposalFilters, setProposalFilters] = useState({
+    wordType: 'all',
+    proposalType: 'all',
+    proposerId: 'all',
+    query: '',
+  })
   const nounInputRef = useRef(null)
   const verbInputRef = useRef(null)
 
   const activeCollectionId = activeCollection?.versionId || null
   const isAnonymous = selectedUser?.id === ANONYMOUS_USER.id
-  const canEditItems = !activeCollectionId && !isAnonymous
+  const userLevel = selectedUser?.level ?? 0
+  const canEditItems = !activeCollectionId && !isAnonymous && Boolean(selectedUser)
   const canManageCollections = Boolean(selectedUser && !isAnonymous)
+  const canReviewProposals = Boolean(selectedUser && !isAnonymous && userLevel >= MODERATOR_LEVEL)
+  const canAssignLevels = Boolean(selectedUser && !isAnonymous && userLevel >= ADMIN_LEVEL)
 
   const refreshModules = useCallback(
     async (versionId = activeCollectionId) => {
@@ -206,6 +231,63 @@ function App() {
     }
   }, [activeCollectionId])
 
+  const loadItemProposals = useCallback(async () => {
+    if (!selectedUser || !canReviewProposals) {
+      setItemProposals([])
+      return
+    }
+    setIsLoadingProposals(true)
+    setError('')
+    try {
+      const params = new URLSearchParams({
+        status: 'pending',
+        reviewer_user_id: String(selectedUser.id),
+      })
+      if (proposalFilters.wordType !== 'all') {
+        params.set('word_type', proposalFilters.wordType)
+      }
+      if (proposalFilters.proposalType !== 'all') {
+        params.set('proposal_type', proposalFilters.proposalType)
+      }
+      if (proposalFilters.proposerId !== 'all') {
+        params.set('proposer_user_id', proposalFilters.proposerId)
+      }
+      if (proposalFilters.query.trim()) {
+        params.set('query', proposalFilters.query.trim())
+      }
+      const data = await apiFetch(`/item-proposals?${params.toString()}`)
+      setItemProposals(data)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsLoadingProposals(false)
+    }
+  }, [selectedUser, canReviewProposals, proposalFilters])
+
+  const updateUserLevel = async (userId, level) => {
+    if (!selectedUser) return
+    setIsUpdatingUserLevel(true)
+    setError('')
+    try {
+      const updated = await apiFetch(`/users/${userId}`, {
+        method: 'PATCH',
+        body: {
+          requester_user_id: selectedUser.id,
+          level,
+        },
+      })
+      setUsers((prev) => prev.map((user) => (user.id === updated.id ? updated : user)))
+      if (selectedUser.id === updated.id) {
+        setSelectedUser(updated)
+      }
+      setInfoMessage('Nivo uporabnika posodobljen.')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsUpdatingUserLevel(false)
+    }
+  }
+
   useEffect(() => {
     if (!familyLevels.includes('A2')) {
       if (familyCases.length !== 1 || familyCases[0] !== 'nominative') {
@@ -217,6 +299,10 @@ function App() {
       setFamilyCases(['nominative'])
     }
   }, [familyLevels, familyCases])
+
+  useEffect(() => {
+    loadItemProposals()
+  }, [loadItemProposals])
 
   const loadStoredSettings = useCallback(() => {
     try {
@@ -948,6 +1034,17 @@ function App() {
   }, [loadUsersAndModules])
 
   useEffect(() => {
+    if (!selectedUser || selectedUser.id === ANONYMOUS_USER.id) return
+    const refreshed = users.find((user) => user.id === selectedUser.id)
+    if (!refreshed) return
+    const levelChanged = (refreshed.level ?? 0) !== (selectedUser.level ?? 0)
+    const nameChanged = refreshed.name !== selectedUser.name
+    if (levelChanged || nameChanged) {
+      setSelectedUser(refreshed)
+    }
+  }, [users, selectedUser])
+
+  useEffect(() => {
     if (selectedUser && selectedModule) {
       loadStats(selectedModule)
     } else {
@@ -1066,17 +1163,20 @@ function App() {
     setItemActionLoading(true)
     setError('')
     try {
+      if (!selectedUser) return
       const payload = {
+        user_id: selectedUser.id,
         translation: (editValues.translation || '').trim(),
         solution: editValues.forms.map((value) => (value || '').trim()),
       }
-      const updated = await apiFetch(`/items/${itemId}`, {
+      const proposal = await apiFetch(`/items/${itemId}`, {
         method: 'PUT',
         body: payload,
       })
-      setModuleItems((prev) =>
-        prev.map((item) => (item.id === itemId ? { ...item, ...updated } : item)),
-      )
+      setInfoMessage(`Predlog spremembe poslan (#${proposal.id}).`)
+      if (canReviewProposals) {
+        await loadItemProposals()
+      }
       cancelEditing()
     } catch (err) {
       setError(err.message)
@@ -1090,16 +1190,49 @@ function App() {
     setItemActionLoading(true)
     setError('')
     try {
-      await apiFetch(`/items/${itemId}`, { method: 'DELETE' })
-      setModuleItems((prev) => prev.filter((item) => item.id !== itemId))
+      if (!selectedUser) return
+      const proposal = await apiFetch(`/items/${itemId}?user_id=${selectedUser.id}`, {
+        method: 'DELETE',
+      })
+      setInfoMessage(`Predlog za izbris poslan (#${proposal.id}).`)
+      if (canReviewProposals) {
+        await loadItemProposals()
+      }
       if (editingItemId === itemId) {
         cancelEditing()
       }
-      await refreshModules()
     } catch (err) {
       setError(err.message)
     } finally {
       setItemActionLoading(false)
+    }
+  }
+
+  const reviewItemProposal = async (proposalId, decision) => {
+    if (!selectedUser) return
+    const proposal = itemProposals.find((item) => item.id === proposalId)
+    setProposalActionLoading(true)
+    setError('')
+    try {
+      await apiFetch(`/item-proposals/${proposalId}/review`, {
+        method: 'POST',
+        body: {
+          reviewer_user_id: selectedUser.id,
+          status: decision,
+        },
+      })
+      setItemProposals((prev) => prev.filter((item) => item.id !== proposalId))
+      setInfoMessage(
+        decision === 'approved' ? 'Predlog potrjen.' : 'Predlog zavrnjen.',
+      )
+      await refreshModules()
+      if (!proposal || proposal.word_type === moduleItemsType) {
+        await reloadModuleItems(moduleItemsType)
+      }
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setProposalActionLoading(false)
     }
   }
 
@@ -1108,9 +1241,10 @@ function App() {
     setError('')
     setIsImporting(true)
     try {
+      if (!selectedUser) return
       const formData = new FormData()
       formData.append('file', file)
-      const result = await apiFetch(`/import/${wordType}`, {
+      const result = await apiFetch(`/import/${wordType}?user_id=${selectedUser.id}`, {
         method: 'POST',
         body: formData,
       })
@@ -1159,6 +1293,21 @@ function App() {
         forms: wordType === 'noun' ? [''] : ['', '', '', ''],
       })
       setListFilter('')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsLoadingItems(false)
+    }
+  }
+
+  const reloadModuleItems = async (wordType) => {
+    if (!wordType || wordType === 'number' || wordType === 'family') return
+    setIsLoadingItems(true)
+    setError('')
+    try {
+      const data = await apiFetch(`/items?word_type=${wordType}&include_solution=true`)
+      setModuleItems(data)
+      cancelEditing()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -1458,16 +1607,20 @@ function App() {
     setItemActionLoading(true)
     setError('')
     try {
-      const created = await apiFetch('/items', {
+      if (!selectedUser) return
+      const proposal = await apiFetch('/items', {
         method: 'POST',
         body: {
           type: moduleItemsType,
+          user_id: selectedUser.id,
           translation: newItem.translation,
           solution: newItem.forms,
         },
       })
-      setModuleItems((prev) => [created, ...prev])
-      await refreshModules()
+      setInfoMessage(`Predlog novega vnosa poslan (#${proposal.id}).`)
+      if (canReviewProposals) {
+        await loadItemProposals()
+      }
       setNewItem({
         translation: '',
         forms: moduleItemsType === 'noun' ? [''] : ['', '', '', ''],
@@ -1883,10 +2036,35 @@ function App() {
                     }
                   }}
                 >
-                  <div>
-                    <span>{user.name}</span>
+                  <div className="user-pill-main">
+                    <span className="user-name">{user.name}</span>
                     <span className="pill-meta">ID: {user.id}</span>
+                    <span className="pill-meta">
+                      Nivo: {USER_LEVEL_LABELS[user.level ?? 0] || user.level}
+                    </span>
                   </div>
+                  {canAssignLevels && (
+                    <label
+                      className="user-level-select"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <span className="pill-meta">Nastavi nivo</span>
+                      <select
+                        value={user.level ?? 0}
+                        onChange={(event) => {
+                          event.stopPropagation()
+                          updateUserLevel(user.id, Number(event.target.value))
+                        }}
+                        disabled={isUpdatingUserLevel || user.id === selectedUser?.id}
+                      >
+                        {USER_LEVEL_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <button
                     type="button"
                     className="remove-btn"
@@ -2505,6 +2683,128 @@ function App() {
               onChange={(event) => handleCsvFileChange('verb', event)}
             />
           </div>
+          {canReviewProposals && (
+            <div className="proposal-section">
+              <p className="section-title">Predlogi sprememb</p>
+              <div className="proposal-filters">
+                <input
+                  type="text"
+                  placeholder="Iskanje"
+                  value={proposalFilters.query}
+                  onChange={(event) =>
+                    setProposalFilters((prev) => ({ ...prev, query: event.target.value }))
+                  }
+                />
+                <select
+                  value={proposalFilters.wordType}
+                  onChange={(event) =>
+                    setProposalFilters((prev) => ({ ...prev, wordType: event.target.value }))
+                  }
+                >
+                  <option value="all">Vsi sklopi</option>
+                  <option value="noun">Samostalniki</option>
+                  <option value="verb">Glagoli</option>
+                </select>
+                <select
+                  value={proposalFilters.proposalType}
+                  onChange={(event) =>
+                    setProposalFilters((prev) => ({
+                      ...prev,
+                      proposalType: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="all">Vse vrste</option>
+                  <option value="create">Nov vnos</option>
+                  <option value="update">Posodobitev</option>
+                  <option value="delete">Izbris</option>
+                </select>
+                <select
+                  value={proposalFilters.proposerId}
+                  onChange={(event) =>
+                    setProposalFilters((prev) => ({
+                      ...prev,
+                      proposerId: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="all">Vsi avtorji</option>
+                  {users.map((user) => (
+                    <option key={user.id} value={String(user.id)}>
+                      {user.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={() =>
+                    setProposalFilters({
+                      wordType: 'all',
+                      proposalType: 'all',
+                      proposerId: 'all',
+                      query: '',
+                    })
+                  }
+                >
+                  Počisti
+                </button>
+              </div>
+              {isLoadingProposals ? (
+                <p className="hint">Nalagam predloge ...</p>
+              ) : itemProposals.length === 0 ? (
+                <p className="hint">Ni odprtih predlogov.</p>
+              ) : (
+                <div className="proposal-list">
+                  {itemProposals.map((proposal) => {
+                    const wordLabel = proposal.word_type === 'noun' ? 'Samostalnik' : 'Glagol'
+                    const proposalLabel =
+                      proposal.proposal_type === 'create'
+                        ? 'Nov vnos'
+                        : proposal.proposal_type === 'update'
+                          ? 'Posodobitev'
+                          : 'Izbris'
+                    return (
+                      <div key={proposal.id} className="proposal-card">
+                        <div className="proposal-main">
+                          <div className="collection-meta-row">
+                            <span className="pill-meta">{wordLabel}</span>
+                            <span className="pill-meta">{proposalLabel}</span>
+                            {proposal.item_id && (
+                              <span className="pill-meta">ID: {proposal.item_id}</span>
+                            )}
+                          </div>
+                          <strong>{proposal.translation}</strong>
+                          {proposal.solution?.length > 0 && (
+                            <span className="hint">{proposal.solution.join(' · ')}</span>
+                          )}
+                          <span className="hint">Predlagal: {proposal.proposer_name}</span>
+                        </div>
+                        <div className="proposal-actions">
+                          <button
+                            type="button"
+                            className="btn primary small"
+                            onClick={() => reviewItemProposal(proposal.id, 'approved')}
+                            disabled={proposalActionLoading}
+                          >
+                            Potrdi
+                          </button>
+                          <button
+                            type="button"
+                            className="btn ghost small"
+                            onClick={() => reviewItemProposal(proposal.id, 'rejected')}
+                            disabled={proposalActionLoading}
+                          >
+                            Zavrni
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
           {selectedModule === 'number' && (
             <div className="number-config">
               <label>
@@ -2663,7 +2963,8 @@ function App() {
           {importSummary && (
             <div className="alert info">
               CSV ({importSummary.wordType === 'noun' ? 'samostalniki' : 'glagoli'}) –{' '}
-              <strong>{importSummary.fileName}</strong> | dodanih {importSummary.added}, preskočenih{' '}
+              <strong>{importSummary.fileName}</strong> | predlogov {importSummary.added},
+              preskočenih{' '}
               {importSummary.skipped}
               {importSummary.errors?.length ? (
                 <details>
@@ -2752,7 +3053,7 @@ function App() {
                 </div>
                 <div className="modal-body">
                 <div className="create-form">
-                  <h4>Dodaj nov vnos</h4>
+                  <h4>Predlagaj nov vnos</h4>
                   <input
                     type="text"
                     placeholder="Filter po geslih/prevodih"
@@ -2799,7 +3100,7 @@ function App() {
                       onClick={handleCreateItem}
                       disabled={itemActionLoading || !moduleItemsType}
                     >
-                      Dodaj
+                      Predlagaj
                     </button>
                   </div>
                 </div>
@@ -2863,7 +3164,7 @@ function App() {
                                   onClick={() => saveItemChanges(item.id)}
                                   disabled={itemActionLoading}
                                 >
-                                  Shrani
+                                  Predlagaj
                                 </button>
                                 <button
                                   type="button"
@@ -2897,7 +3198,7 @@ function App() {
                                   onClick={() => deleteItem(item.id)}
                                   disabled={itemActionLoading}
                                 >
-                                  Izbriši
+                                  Predlagaj izbris
                                 </button>
                               </div>
                             </>

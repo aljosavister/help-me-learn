@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 import learn
 
 WordType = Literal["noun", "verb", "number", "family"]
+ProposalStatus = Literal["pending", "approved", "rejected"]
 NumberComponent = Literal[
     "basic",
     "teens",
@@ -36,6 +37,9 @@ FamilyLevel = Literal["A1", "A2"]
 CollectionVisibility = Literal["draft", "unlisted", "public"]
 
 ALLOWED_MODULES = ("noun", "verb", "number", "family")
+USER_LEVEL_USER = 0
+USER_LEVEL_EDITOR = 1
+USER_LEVEL_ADMIN = 2
 
 app = FastAPI(
     title="German Trainer API",
@@ -75,6 +79,29 @@ def serialize_item_row(row: sqlite3.Row, include_solution: bool = False) -> Item
     )
 
 
+def serialize_proposal_row(row: sqlite3.Row) -> ItemProposalOut:
+    metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+    solution = json.loads(row["solution_json"]) if row["solution_json"] else []
+    return ItemProposalOut(
+        id=row["id"],
+        proposal_type=row["proposal_type"],
+        status=row["status"],
+        word_type=row["word_type"],
+        item_id=row["item_id"],
+        keyword=row["keyword"],
+        translation=row["translation"],
+        solution=solution,
+        metadata=metadata,
+        proposer_user_id=row["proposer_user_id"],
+        proposer_name=row["proposer_name"],
+        proposed_at=row["proposed_at"],
+        reviewer_user_id=row["reviewer_user_id"],
+        reviewer_name=row["reviewer_name"],
+        reviewed_at=row["reviewed_at"],
+        review_notes=row["review_notes"],
+    )
+
+
 def _init_database() -> None:
     conn = _connect_db()
     conn.row_factory = sqlite3.Row
@@ -102,6 +129,27 @@ def ensure_user(conn: sqlite3.Connection, user_id: int) -> None:
     row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Uporabnik ne obstaja.")
+
+
+def get_user_level(conn: sqlite3.Connection, user_id: int) -> int:
+    if user_id <= 0:
+        raise HTTPException(status_code=400, detail="Uporabnik mora biti prijavljen.")
+    row = conn.execute("SELECT level FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Uporabnik ne obstaja.")
+    return int(row["level"] or 0)
+
+
+def ensure_moderator(conn: sqlite3.Connection, user_id: int) -> None:
+    level = get_user_level(conn, user_id)
+    if level < USER_LEVEL_EDITOR:
+        raise HTTPException(status_code=403, detail="Nimaš pravic za potrjevanje predlogov.")
+
+
+def ensure_admin(conn: sqlite3.Connection, user_id: int) -> None:
+    level = get_user_level(conn, user_id)
+    if level < USER_LEVEL_ADMIN:
+        raise HTTPException(status_code=403, detail="Nimaš pravic za urejanje nivojev.")
 
 
 def _normalize_collection_config(raw: Optional[Dict[str, object]]) -> Dict[str, object]:
@@ -219,6 +267,86 @@ def _generate_access_code(conn: sqlite3.Connection, collection_id: int, version_
     raise HTTPException(status_code=500, detail="Ne morem ustvariti unikatne kode.")
 
 
+def _build_item_record(word_type: str, translation: str, solutions: List[str]) -> tuple[str, str, str, str]:
+    if word_type == "noun":
+        if len(solutions) != 1 or not solutions[0]:
+            raise HTTPException(status_code=400, detail="Samostalnik mora imeti zapis člena in besede.")
+        records, errors = learn.build_noun_records([[solutions[0], translation]])
+    else:
+        if len(solutions) != 4 or any(not value for value in solutions):
+            raise HTTPException(status_code=400, detail="Glagol mora imeti vse 4 oblike.")
+        records, errors = learn.build_verb_records(
+            [[solutions[0], solutions[1], solutions[2], solutions[3], translation]]
+        )
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    return records[0]
+
+
+def _fetch_item_proposal(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        """
+        SELECT
+            p.*,
+            u.name AS proposer_name,
+            r.name AS reviewer_name
+        FROM item_proposals p
+        JOIN users u ON u.id = p.proposer_user_id
+        LEFT JOIN users r ON r.id = p.reviewer_user_id
+        WHERE p.id = ?
+        """,
+        (proposal_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Predlog ne obstaja.")
+    return row
+
+
+def _create_item_proposal(
+    conn: sqlite3.Connection,
+    proposer_user_id: int,
+    proposal_type: str,
+    word_type: str,
+    item_id: Optional[int],
+    keyword: str,
+    translation: str,
+    solution_json: str,
+    metadata_json: Optional[str],
+) -> ItemProposalOut:
+    now = learn.now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO item_proposals (
+            proposer_user_id,
+            item_id,
+            proposal_type,
+            status,
+            word_type,
+            keyword,
+            translation,
+            solution_json,
+            metadata_json,
+            proposed_at
+        )
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            proposer_user_id,
+            item_id,
+            proposal_type,
+            word_type,
+            keyword,
+            translation,
+            solution_json,
+            metadata_json,
+            now,
+        ),
+    )
+    conn.commit()
+    row = _fetch_item_proposal(conn, cur.lastrowid)
+    return serialize_proposal_row(row)
+
+
 def _fetch_collection_version(
     conn: sqlite3.Connection, version_id: int
 ) -> sqlite3.Row:
@@ -330,6 +458,12 @@ class UserOut(BaseModel):
     id: int
     name: str
     created_at: str
+    level: int
+
+
+class UserUpdate(BaseModel):
+    requester_user_id: int
+    level: int = Field(..., ge=0, le=10)
 
 
 class ModuleOut(BaseModel):
@@ -428,13 +562,40 @@ class ImportResult(BaseModel):
 
 class ItemCreate(BaseModel):
     type: WordType
+    user_id: int
     translation: str
     solution: List[str]
 
 
 class ItemUpdate(BaseModel):
+    user_id: int
     translation: str
     solution: List[str]
+
+
+class ItemProposalOut(BaseModel):
+    id: int
+    proposal_type: str
+    status: str
+    word_type: str
+    item_id: Optional[int]
+    keyword: str
+    translation: str
+    solution: List[str]
+    metadata: Dict
+    proposer_user_id: int
+    proposer_name: str
+    proposed_at: str
+    reviewer_user_id: Optional[int]
+    reviewer_name: Optional[str]
+    reviewed_at: Optional[str]
+    review_notes: Optional[str]
+
+
+class ItemProposalReview(BaseModel):
+    reviewer_user_id: int
+    status: Literal["approved", "rejected"]
+    review_notes: Optional[str] = None
 
 
 class DeleteUserRequest(BaseModel):
@@ -526,23 +687,60 @@ def root() -> Dict[str, str]:
 
 @app.get("/users", response_model=List[UserOut])
 def list_users(conn: sqlite3.Connection = Depends(get_db)) -> List[UserOut]:
-    rows = conn.execute("SELECT id, name, created_at FROM users ORDER BY id").fetchall()
-    return [UserOut(id=row["id"], name=row["name"], created_at=row["created_at"]) for row in rows]
+    rows = conn.execute("SELECT id, name, created_at, level FROM users ORDER BY id").fetchall()
+    return [
+        UserOut(id=row["id"], name=row["name"], created_at=row["created_at"], level=row["level"] or 0)
+        for row in rows
+    ]
 
 
 @app.post("/users", response_model=UserOut, status_code=201)
 def create_user(payload: UserCreate, conn: sqlite3.Connection = Depends(get_db)) -> UserOut:
     user_id = learn.get_or_create_user(conn, payload.name.strip())
-    row = conn.execute("SELECT id, name, created_at FROM users WHERE id = ?", (user_id,)).fetchone()
-    return UserOut(id=row["id"], name=row["name"], created_at=row["created_at"])
+    row = conn.execute(
+        "SELECT id, name, created_at, level FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    return UserOut(
+        id=row["id"],
+        name=row["name"],
+        created_at=row["created_at"],
+        level=row["level"] or 0,
+    )
 
 
 @app.get("/users/{user_id}", response_model=UserOut)
 def get_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> UserOut:
-    row = conn.execute("SELECT id, name, created_at FROM users WHERE id = ?", (user_id,)).fetchone()
+    row = conn.execute(
+        "SELECT id, name, created_at, level FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Uporabnik ne obstaja.")
-    return UserOut(id=row["id"], name=row["name"], created_at=row["created_at"])
+    return UserOut(
+        id=row["id"],
+        name=row["name"],
+        created_at=row["created_at"],
+        level=row["level"] or 0,
+    )
+
+
+@app.patch("/users/{user_id}", response_model=UserOut)
+def update_user(user_id: int, payload: UserUpdate, conn: sqlite3.Connection = Depends(get_db)) -> UserOut:
+    ensure_admin(conn, payload.requester_user_id)
+    ensure_user(conn, user_id)
+    conn.execute("UPDATE users SET level = ? WHERE id = ?", (payload.level, user_id))
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, name, created_at, level FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    return UserOut(
+        id=row["id"],
+        name=row["name"],
+        created_at=row["created_at"],
+        level=row["level"] or 0,
+    )
 
 
 @app.post("/collections", response_model=CollectionOut, status_code=201)
@@ -1874,6 +2072,7 @@ def user_stats(
 @app.post("/import/{word_type}", response_model=ImportResult)
 async def import_csv_endpoint(
     word_type: WordType,
+    user_id: int = Query(...),
     file: UploadFile = File(...),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> ImportResult:
@@ -1888,17 +2087,197 @@ async def import_csv_endpoint(
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         text = raw.decode("latin-1")
-    result = learn.import_csv_text(conn, word_type, text)
-    return ImportResult(added=result["added"], skipped=result["skipped"], errors=result["errors"])
+    ensure_user(conn, user_id)
+    if user_id <= 0:
+        raise HTTPException(status_code=400, detail="Izberi prijavljenega uporabnika.")
+    rows = learn.parse_csv_content(text)
+    if word_type == "noun":
+        records, errors = learn.build_noun_records(rows)
+    else:
+        records, errors = learn.build_verb_records(rows)
+    added = 0
+    skipped = 0
+    for keyword, translation, solution_json, metadata_json in records:
+        exists = conn.execute(
+            "SELECT 1 FROM items WHERE type = ? AND keyword = ?",
+            (word_type, keyword),
+        ).fetchone()
+        if exists:
+            skipped += 1
+            continue
+        pending = conn.execute(
+            """
+            SELECT 1 FROM item_proposals
+            WHERE status = 'pending' AND word_type = ? AND keyword = ?
+            """,
+            (word_type, keyword),
+        ).fetchone()
+        if pending:
+            skipped += 1
+            continue
+        _create_item_proposal(
+            conn,
+            proposer_user_id=user_id,
+            proposal_type="create",
+            word_type=word_type,
+            item_id=None,
+            keyword=keyword,
+            translation=translation,
+            solution_json=solution_json,
+            metadata_json=metadata_json,
+        )
+        added += 1
+    return ImportResult(added=added, skipped=skipped, errors=errors)
 
 
-@app.put("/items/{item_id}", response_model=ItemOut)
+@app.get("/item-proposals", response_model=List[ItemProposalOut])
+def list_item_proposals(
+    reviewer_user_id: int = Query(...),
+    status: ProposalStatus = Query("pending"),
+    word_type: Optional[WordType] = Query(default=None),
+    proposal_type: Optional[str] = Query(default=None),
+    proposer_user_id: Optional[int] = Query(default=None),
+    query: Optional[str] = Query(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> List[ItemProposalOut]:
+    ensure_moderator(conn, reviewer_user_id)
+    params: List[object] = [status]
+    sql_query = """
+        SELECT
+            p.*,
+            u.name AS proposer_name,
+            r.name AS reviewer_name
+        FROM item_proposals p
+        JOIN users u ON u.id = p.proposer_user_id
+        LEFT JOIN users r ON r.id = p.reviewer_user_id
+        WHERE p.status = ?
+    """
+    if word_type:
+        if word_type not in ("noun", "verb"):
+            raise HTTPException(status_code=400, detail="Neveljaven sklop.")
+        sql_query += " AND p.word_type = ?"
+        params.append(word_type)
+    if proposal_type:
+        if proposal_type not in ("create", "update", "delete"):
+            raise HTTPException(status_code=400, detail="Neveljaven tip predloga.")
+        sql_query += " AND p.proposal_type = ?"
+        params.append(proposal_type)
+    if proposer_user_id:
+        sql_query += " AND p.proposer_user_id = ?"
+        params.append(proposer_user_id)
+    search_text = (query or "").strip().lower()
+    if search_text:
+        sql_query += " AND (LOWER(p.keyword) LIKE ? OR LOWER(p.translation) LIKE ? OR LOWER(p.solution_json) LIKE ?)"
+        like = f"%{search_text}%"
+        params.extend([like, like, like])
+    sql_query += " ORDER BY p.proposed_at DESC"
+    rows = conn.execute(sql_query, tuple(params)).fetchall()
+    return [serialize_proposal_row(row) for row in rows]
+
+
+@app.post("/item-proposals/{proposal_id}/review", response_model=ItemProposalOut)
+def review_item_proposal(
+    proposal_id: int,
+    payload: ItemProposalReview,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> ItemProposalOut:
+    ensure_moderator(conn, payload.reviewer_user_id)
+    row = _fetch_item_proposal(conn, proposal_id)
+    if row["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Predlog je že obdelan.")
+    review_notes = payload.review_notes.strip() if payload.review_notes else None
+    now = learn.now_iso()
+
+    if payload.status == "approved":
+        keyword = row["keyword"]
+        if row["proposal_type"] in ("create", "update"):
+            existing = conn.execute(
+                "SELECT id FROM items WHERE type = ? AND keyword = ?",
+                (row["word_type"], keyword),
+            ).fetchone()
+            if existing and (row["proposal_type"] == "create" or existing["id"] != row["item_id"]):
+                payload = ItemProposalReview(
+                    reviewer_user_id=payload.reviewer_user_id,
+                    status="rejected",
+                    review_notes="Vnos z enakim ključem že obstaja.",
+                )
+                review_notes = payload.review_notes
+        if row["proposal_type"] == "create" and payload.status == "approved":
+            conn.execute(
+                """
+                INSERT INTO items (type, keyword, translation, solution_json, metadata_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    row["word_type"],
+                    row["keyword"],
+                    row["translation"],
+                    row["solution_json"],
+                    row["metadata_json"],
+                ),
+            )
+        elif row["proposal_type"] == "update" and payload.status == "approved":
+            current = conn.execute(
+                "SELECT id FROM items WHERE id = ?",
+                (row["item_id"],),
+            ).fetchone()
+            if not current:
+                raise HTTPException(status_code=404, detail="Vnos ne obstaja.")
+            conn.execute(
+                """
+                UPDATE items
+                SET keyword = ?, translation = ?, solution_json = ?, metadata_json = ?
+                WHERE id = ?
+                """,
+                (
+                    row["keyword"],
+                    row["translation"],
+                    row["solution_json"],
+                    row["metadata_json"],
+                    row["item_id"],
+                ),
+            )
+        elif row["proposal_type"] == "delete" and payload.status == "approved":
+            current = conn.execute(
+                "SELECT id FROM items WHERE id = ?",
+                (row["item_id"],),
+            ).fetchone()
+            if not current:
+                raise HTTPException(status_code=404, detail="Vnos ne obstaja.")
+            conn.execute("DELETE FROM items WHERE id = ?", (row["item_id"],))
+
+    conn.execute(
+        """
+        UPDATE item_proposals
+        SET status = ?, reviewed_at = ?, reviewer_user_id = ?, review_notes = ?
+        WHERE id = ?
+        """,
+        (
+            payload.status,
+            now,
+            payload.reviewer_user_id,
+            review_notes,
+            proposal_id,
+        ),
+    )
+    conn.commit()
+    row = _fetch_item_proposal(conn, proposal_id)
+    return serialize_proposal_row(row)
+
+
+@app.put("/items/{item_id}", response_model=ItemProposalOut)
 def update_item(
     item_id: int,
     payload: ItemUpdate,
     conn: sqlite3.Connection = Depends(get_db),
-) -> ItemOut:
-    row = conn.execute("SELECT id, type FROM items WHERE id = ?", (item_id,)).fetchone()
+) -> ItemProposalOut:
+    ensure_user(conn, payload.user_id)
+    if payload.user_id <= 0:
+        raise HTTPException(status_code=400, detail="Izberi prijavljenega uporabnika.")
+    row = conn.execute(
+        "SELECT id, type FROM items WHERE id = ?",
+        (item_id,),
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Vnos ne obstaja.")
     word_type = row["type"]
@@ -1906,87 +2285,114 @@ def update_item(
     if not translation:
         raise HTTPException(status_code=400, detail="Prevod ne sme biti prazen.")
     solutions = [value.strip() for value in payload.solution]
-    try:
-        if word_type == "noun":
-            if len(solutions) != 1 or not solutions[0]:
-                raise HTTPException(status_code=400, detail="Samostalnik mora imeti zapis člena in besede.")
-            records, errors = learn.build_noun_records([[solutions[0], translation]])
-        else:
-            if len(solutions) != 4 or any(not value for value in solutions):
-                raise HTTPException(status_code=400, detail="Glagol mora imeti vse 4 oblike.")
-            records, errors = learn.build_verb_records([[solutions[0], solutions[1], solutions[2], solutions[3], translation]])
-        if errors:
-            raise HTTPException(status_code=400, detail="; ".join(errors))
-        keyword, new_translation, solution_json, metadata_json = records[0]
-        conn.execute(
-            """
-            UPDATE items
-            SET keyword=?, translation=?, solution_json=?, metadata_json=?
-            WHERE id=?
-            """,
-            (keyword, new_translation, solution_json, metadata_json, item_id),
-        )
-        conn.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=400, detail="Vnos z enakim ključem že obstaja.")
-    refreshed = conn.execute(
-        "SELECT id, type, translation, solution_json, metadata_json FROM items WHERE id = ?",
-        (item_id,),
+    keyword, new_translation, solution_json, metadata_json = _build_item_record(
+        word_type,
+        translation,
+        solutions,
+    )
+    pending = conn.execute(
+        """
+        SELECT 1 FROM item_proposals
+        WHERE status = 'pending' AND word_type = ? AND item_id = ?
+        """,
+        (word_type, item_id),
     ).fetchone()
-    return serialize_item_row(refreshed, include_solution=True)
+    if pending:
+        raise HTTPException(status_code=400, detail="Za ta vnos že obstaja odprt predlog.")
+    return _create_item_proposal(
+        conn,
+        proposer_user_id=payload.user_id,
+        proposal_type="update",
+        word_type=word_type,
+        item_id=item_id,
+        keyword=keyword,
+        translation=new_translation,
+        solution_json=solution_json,
+        metadata_json=metadata_json,
+    )
 
 
-@app.delete("/items/{item_id}", status_code=204)
+@app.delete("/items/{item_id}", response_model=ItemProposalOut, status_code=202)
 def delete_item(
     item_id: int,
+    user_id: int = Query(...),
     conn: sqlite3.Connection = Depends(get_db),
-) -> Response:
-    row = conn.execute("SELECT id FROM items WHERE id = ?", (item_id,)).fetchone()
+) -> ItemProposalOut:
+    ensure_user(conn, user_id)
+    if user_id <= 0:
+        raise HTTPException(status_code=400, detail="Izberi prijavljenega uporabnika.")
+    row = conn.execute(
+        "SELECT id, type, keyword, translation, solution_json, metadata_json FROM items WHERE id = ?",
+        (item_id,),
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Vnos ne obstaja.")
-    conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
-    conn.commit()
-    return Response(status_code=204)
+    pending = conn.execute(
+        """
+        SELECT 1 FROM item_proposals
+        WHERE status = 'pending' AND word_type = ? AND item_id = ?
+        """,
+        (row["type"], item_id),
+    ).fetchone()
+    if pending:
+        raise HTTPException(status_code=400, detail="Za ta vnos že obstaja odprt predlog.")
+    return _create_item_proposal(
+        conn,
+        proposer_user_id=user_id,
+        proposal_type="delete",
+        word_type=row["type"],
+        item_id=item_id,
+        keyword=row["keyword"],
+        translation=row["translation"],
+        solution_json=row["solution_json"],
+        metadata_json=row["metadata_json"],
+    )
 
 
-@app.post("/items", response_model=ItemOut, status_code=201)
-def create_item(payload: ItemCreate, conn: sqlite3.Connection = Depends(get_db)) -> ItemOut:
+@app.post("/items", response_model=ItemProposalOut, status_code=202)
+def create_item(payload: ItemCreate, conn: sqlite3.Connection = Depends(get_db)) -> ItemProposalOut:
     if payload.type == "number":
         raise HTTPException(status_code=400, detail="Števil ni mogoče dodajati ročno.")
     if payload.type == "family":
         raise HTTPException(status_code=400, detail="Družine ni mogoče dodajati ročno.")
+    ensure_user(conn, payload.user_id)
+    if payload.user_id <= 0:
+        raise HTTPException(status_code=400, detail="Izberi prijavljenega uporabnika.")
     translation = payload.translation.strip()
     if not translation:
         raise HTTPException(status_code=400, detail="Prevod ne sme biti prazen.")
     solutions = [value.strip() for value in payload.solution]
-    try:
-        if payload.type == "noun":
-            if len(solutions) != 1 or not solutions[0]:
-                raise HTTPException(status_code=400, detail="Samostalnik mora imeti zapis člena in besede.")
-            records, errors = learn.build_noun_records([[solutions[0], translation]])
-        else:
-            if len(solutions) != 4 or any(not value for value in solutions):
-                raise HTTPException(status_code=400, detail="Glagol mora imeti vse 4 oblike.")
-            records, errors = learn.build_verb_records([[solutions[0], solutions[1], solutions[2], solutions[3], translation]])
-        if errors:
-            raise HTTPException(status_code=400, detail="; ".join(errors))
-        keyword, new_translation, solution_json, metadata_json = records[0]
-        cur = conn.execute(
-            """
-            INSERT INTO items (type, keyword, translation, solution_json, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (payload.type, keyword, new_translation, solution_json, metadata_json),
-        )
-        conn.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=400, detail="Vnos z enakim ključem že obstaja.")
-    new_id = cur.lastrowid
-    row = conn.execute(
-        "SELECT id, type, translation, solution_json, metadata_json FROM items WHERE id = ?",
-        (new_id,),
+    keyword, new_translation, solution_json, metadata_json = _build_item_record(
+        payload.type,
+        translation,
+        solutions,
+    )
+    exists = conn.execute(
+        "SELECT 1 FROM items WHERE type = ? AND keyword = ?",
+        (payload.type, keyword),
     ).fetchone()
-    return serialize_item_row(row, include_solution=True)
+    if exists:
+        raise HTTPException(status_code=400, detail="Vnos z enakim ključem že obstaja.")
+    pending = conn.execute(
+        """
+        SELECT 1 FROM item_proposals
+        WHERE status = 'pending' AND word_type = ? AND keyword = ?
+        """,
+        (payload.type, keyword),
+    ).fetchone()
+    if pending:
+        raise HTTPException(status_code=400, detail="Za ta vnos že obstaja odprt predlog.")
+    return _create_item_proposal(
+        conn,
+        proposer_user_id=payload.user_id,
+        proposal_type="create",
+        word_type=payload.type,
+        item_id=None,
+        keyword=keyword,
+        translation=new_translation,
+        solution_json=solution_json,
+        metadata_json=metadata_json,
+    )
 
 @app.delete("/users/{user_id}", status_code=204)
 def delete_user(user_id: int, conn: sqlite3.Connection = Depends(get_db)) -> Response:
