@@ -47,17 +47,20 @@ const FAMILY_MODES_STORAGE_KEY = 'familyModes'
 const FAMILY_INCLUDE_PLURAL_KEY = 'familyIncludePlural'
 const ACTIVE_COLLECTION_STORAGE_KEY = 'activeCollectionVersionId'
 const ANONYMOUS_USER = { id: 0, name: 'Anonimno', level: 0 }
-const MODERATOR_LEVEL = 1
-const ADMIN_LEVEL = 2
+const AUTHOR_LEVEL = 1
+const MODERATOR_LEVEL = 2
+const ADMIN_LEVEL = 3
 const USER_LEVEL_LABELS = {
-  0: 'Uporabnik',
-  1: 'Urednik',
-  2: 'Admin',
+  0: 'Anonimni uporabnik',
+  1: 'Avtor',
+  2: 'Urednik',
+  3: 'Skrbnik',
 }
 const USER_LEVEL_OPTIONS = [
-  { value: 0, label: 'Uporabnik' },
-  { value: 1, label: 'Urednik' },
-  { value: 2, label: 'Admin' },
+  { value: 0, label: 'Anonimni uporabnik' },
+  { value: 1, label: 'Avtor' },
+  { value: 2, label: 'Urednik' },
+  { value: 3, label: 'Skrbnik' },
 ]
 
 const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
@@ -195,7 +198,7 @@ function App() {
   const activeCollectionId = activeCollection?.versionId || null
   const isAnonymous = selectedUser?.id === ANONYMOUS_USER.id
   const userLevel = selectedUser?.level ?? 0
-  const canEditItems = !activeCollectionId && !isAnonymous && Boolean(selectedUser)
+  const canEditItems = !activeCollectionId && !isAnonymous && userLevel >= AUTHOR_LEVEL
   const canManageCollections = Boolean(selectedUser && !isAnonymous)
   const canReviewProposals = Boolean(selectedUser && !isAnonymous && userLevel >= MODERATOR_LEVEL)
   const canAssignLevels = Boolean(selectedUser && !isAnonymous && userLevel >= ADMIN_LEVEL)
@@ -1164,6 +1167,10 @@ function App() {
     setError('')
     try {
       if (!selectedUser) return
+      if (userLevel < AUTHOR_LEVEL) {
+        setError('Nimaš pravic za pošiljanje predlogov.')
+        return
+      }
       const payload = {
         user_id: selectedUser.id,
         translation: (editValues.translation || '').trim(),
@@ -1191,6 +1198,10 @@ function App() {
     setError('')
     try {
       if (!selectedUser) return
+      if (userLevel < AUTHOR_LEVEL) {
+        setError('Nimaš pravic za pošiljanje predlogov.')
+        return
+      }
       const proposal = await apiFetch(`/items/${itemId}?user_id=${selectedUser.id}`, {
         method: 'DELETE',
       })
@@ -1242,6 +1253,10 @@ function App() {
     setIsImporting(true)
     try {
       if (!selectedUser) return
+      if (userLevel < AUTHOR_LEVEL) {
+        setError('Nimaš pravic za pošiljanje predlogov.')
+        return
+      }
       const formData = new FormData()
       formData.append('file', file)
       const result = await apiFetch(`/import/${wordType}?user_id=${selectedUser.id}`, {
@@ -1608,6 +1623,10 @@ function App() {
     setError('')
     try {
       if (!selectedUser) return
+      if (userLevel < AUTHOR_LEVEL) {
+        setError('Nimaš pravic za pošiljanje predlogov.')
+        return
+      }
       const proposal = await apiFetch('/items', {
         method: 'POST',
         body: {

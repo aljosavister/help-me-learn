@@ -37,9 +37,10 @@ FamilyLevel = Literal["A1", "A2"]
 CollectionVisibility = Literal["draft", "unlisted", "public"]
 
 ALLOWED_MODULES = ("noun", "verb", "number", "family")
-USER_LEVEL_USER = 0
-USER_LEVEL_EDITOR = 1
-USER_LEVEL_ADMIN = 2
+USER_LEVEL_ANONYMOUS = 0
+USER_LEVEL_AUTHOR = 1
+USER_LEVEL_EDITOR = 2
+USER_LEVEL_ADMIN = 3
 
 app = FastAPI(
     title="German Trainer API",
@@ -150,6 +151,12 @@ def ensure_admin(conn: sqlite3.Connection, user_id: int) -> None:
     level = get_user_level(conn, user_id)
     if level < USER_LEVEL_ADMIN:
         raise HTTPException(status_code=403, detail="Nimaš pravic za urejanje nivojev.")
+
+
+def ensure_author(conn: sqlite3.Connection, user_id: int) -> None:
+    level = get_user_level(conn, user_id)
+    if level < USER_LEVEL_AUTHOR:
+        raise HTTPException(status_code=403, detail="Nimaš pravic za pošiljanje predlogov.")
 
 
 def _normalize_collection_config(raw: Optional[Dict[str, object]]) -> Dict[str, object]:
@@ -2090,6 +2097,7 @@ async def import_csv_endpoint(
     ensure_user(conn, user_id)
     if user_id <= 0:
         raise HTTPException(status_code=400, detail="Izberi prijavljenega uporabnika.")
+    ensure_author(conn, user_id)
     rows = learn.parse_csv_content(text)
     if word_type == "noun":
         records, errors = learn.build_noun_records(rows)
@@ -2274,6 +2282,7 @@ def update_item(
     ensure_user(conn, payload.user_id)
     if payload.user_id <= 0:
         raise HTTPException(status_code=400, detail="Izberi prijavljenega uporabnika.")
+    ensure_author(conn, payload.user_id)
     row = conn.execute(
         "SELECT id, type FROM items WHERE id = ?",
         (item_id,),
@@ -2321,6 +2330,7 @@ def delete_item(
     ensure_user(conn, user_id)
     if user_id <= 0:
         raise HTTPException(status_code=400, detail="Izberi prijavljenega uporabnika.")
+    ensure_author(conn, user_id)
     row = conn.execute(
         "SELECT id, type, keyword, translation, solution_json, metadata_json FROM items WHERE id = ?",
         (item_id,),
@@ -2358,6 +2368,7 @@ def create_item(payload: ItemCreate, conn: sqlite3.Connection = Depends(get_db))
     ensure_user(conn, payload.user_id)
     if payload.user_id <= 0:
         raise HTTPException(status_code=400, detail="Izberi prijavljenega uporabnika.")
+    ensure_author(conn, payload.user_id)
     translation = payload.translation.strip()
     if not translation:
         raise HTTPException(status_code=400, detail="Prevod ne sme biti prazen.")

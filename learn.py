@@ -585,11 +585,11 @@ def ensure_admin_user(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if row:
         current_level = row[1] if len(row) > 1 else 0
-        if current_level < 2:
-            conn.execute("UPDATE users SET level = 2 WHERE id = ?", (row[0],))
+        if current_level < 3:
+            conn.execute("UPDATE users SET level = 3 WHERE id = ?", (row[0],))
         return
     conn.execute(
-        "INSERT INTO users (name, created_at, level) VALUES (?, ?, 2)",
+        "INSERT INTO users (name, created_at, level) VALUES (?, ?, 3)",
         ("admin", now_iso()),
     )
 
