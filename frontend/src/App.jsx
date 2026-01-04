@@ -31,6 +31,12 @@ const FAMILY_CASES = [
   { key: 'accusative', label: 'Akuzativ' },
   { key: 'dative', label: 'Dativ' },
 ]
+const COLLECTION_MODULES = [
+  { key: 'noun', label: 'Samostalniki' },
+  { key: 'verb', label: 'Nepravilni glagoli' },
+  { key: 'number', label: 'Števila' },
+  { key: 'family', label: 'Družina' },
+]
 const FAMILY_MODES = [
   { key: 'noun', label: 'Samostalniki' },
   { key: 'phrase', label: 'Fraze (moj/tvoj/...)' },
@@ -39,6 +45,8 @@ const FAMILY_LEVELS_STORAGE_KEY = 'familyLevels'
 const FAMILY_CASES_STORAGE_KEY = 'familyCases'
 const FAMILY_MODES_STORAGE_KEY = 'familyModes'
 const FAMILY_INCLUDE_PLURAL_KEY = 'familyIncludePlural'
+const ACTIVE_COLLECTION_STORAGE_KEY = 'activeCollectionVersionId'
+const ANONYMOUS_USER = { id: 0, name: 'Anonimno' }
 
 const normalizeText = (text, { allowUmlautFallback = false, collapseSpaces = true } = {}) => {
   let cleaned = text.trim().toLowerCase().replace(/ß/g, 'ss')
@@ -80,6 +88,19 @@ function App() {
   const [users, setUsers] = useState([])
   const [modules, setModules] = useState([])
   const [selectedUser, setSelectedUser] = useState(null)
+  const [activeCollection, setActiveCollection] = useState(null)
+  const [publicCollections, setPublicCollections] = useState([])
+  const [ownerCollections, setOwnerCollections] = useState([])
+  const [collectionCode, setCollectionCode] = useState('')
+  const [collectionBusy, setCollectionBusy] = useState(false)
+  const [newCollection, setNewCollection] = useState({ title: '', description: '' })
+  const [versionForm, setVersionForm] = useState({
+    collectionId: null,
+    title: '',
+    description: '',
+    visibility: 'draft',
+    modules: COLLECTION_MODULES.map((module) => module.key),
+  })
   const [selectedModule, setSelectedModule] = useState(null)
   const [newUserName, setNewUserName] = useState('')
   const [numberMax, setNumberMax] = useState(String(NUMBER_DEFAULT_MAX))
@@ -123,10 +144,19 @@ function App() {
   const nounInputRef = useRef(null)
   const verbInputRef = useRef(null)
 
-  const refreshModules = useCallback(async () => {
-    const moduleData = await apiFetch('/modules')
-    setModules(moduleData)
-  }, [])
+  const activeCollectionId = activeCollection?.versionId || null
+  const isAnonymous = selectedUser?.id === ANONYMOUS_USER.id
+  const canEditItems = !activeCollectionId && !isAnonymous
+  const canManageCollections = Boolean(selectedUser && !isAnonymous)
+
+  const refreshModules = useCallback(
+    async (versionId = activeCollectionId) => {
+      const path = versionId ? `/modules?collection_version_id=${versionId}` : '/modules'
+      const moduleData = await apiFetch(path)
+      setModules(moduleData)
+    },
+    [activeCollectionId],
+  )
 
   const currentQuestion = cycle ? cycle.items[currentIndex] : null
   const isLastQuestion = cycle ? currentIndex === cycle.items.length - 1 : false
@@ -134,9 +164,12 @@ function App() {
   const loadUsersAndModules = useCallback(async () => {
     setIsLoadingData(true)
     try {
+      const modulePath = activeCollectionId
+        ? `/modules?collection_version_id=${activeCollectionId}`
+        : '/modules'
       const [userData, moduleData] = await Promise.all([
         apiFetch('/users'),
-        apiFetch('/modules'),
+        apiFetch(modulePath),
       ])
       setUsers(userData)
       setModules(moduleData)
@@ -145,19 +178,7 @@ function App() {
     } finally {
       setIsLoadingData(false)
     }
-  }, [])
-
-  useEffect(() => {
-    loadUsersAndModules()
-  }, [loadUsersAndModules])
-
-  useEffect(() => {
-    if (selectedUser && selectedModule) {
-      loadStats(selectedModule)
-    } else {
-      setStats(null)
-    }
-  }, [selectedUser, selectedModule])
+  }, [activeCollectionId])
 
   useEffect(() => {
     if (!familyLevels.includes('A2')) {
@@ -171,7 +192,7 @@ function App() {
     }
   }, [familyLevels, familyCases])
 
-  useEffect(() => {
+  const loadStoredSettings = useCallback(() => {
     try {
       const storedEnabled = localStorage.getItem(NUMBER_COMPONENTS_TOGGLE_KEY)
       if (storedEnabled !== null) {
@@ -237,6 +258,13 @@ function App() {
   }, [])
 
   useEffect(() => {
+    loadStoredSettings()
+  }, [loadStoredSettings])
+
+  useEffect(() => {
+    if (activeCollection) {
+      return
+    }
     try {
       localStorage.setItem(NUMBER_COMPONENTS_TOGGLE_KEY, String(useNumberComponents))
       localStorage.setItem(
@@ -261,6 +289,7 @@ function App() {
     familyCases,
     familyModes,
     familyIncludePlural,
+    activeCollection,
   ])
 
   useEffect(() => {
@@ -279,10 +308,20 @@ function App() {
     }
   }, [questionStage, currentQuestion])
 
+  useEffect(() => {
+    if (selectedModule && !modules.some((module) => module.type === selectedModule)) {
+      setSelectedModule(null)
+    }
+  }, [modules, selectedModule])
+
   const loadStats = async (wordType) => {
     if (!selectedUser) return
     try {
-      const data = await apiFetch(`/users/${selectedUser.id}/stats?word_type=${wordType}`)
+      const params = new URLSearchParams({ word_type: wordType })
+      if (activeCollectionId) {
+        params.set('collection_version_id', String(activeCollectionId))
+      }
+      const data = await apiFetch(`/users/${selectedUser.id}/stats?${params.toString()}`)
       setStats(data)
       return data
     } catch (err) {
@@ -290,6 +329,334 @@ function App() {
     }
     return null
   }
+
+  const applyCollectionConfig = (config) => {
+    if (!config || typeof config !== 'object') return
+    const numberConfig = config.number || {}
+    if (numberConfig.max_number !== undefined) {
+      setNumberMax(String(numberConfig.max_number))
+    }
+    if (numberConfig.cycle_size !== undefined && numberConfig.cycle_size !== null) {
+      setNumberCycleSize(String(numberConfig.cycle_size))
+    }
+    if (typeof numberConfig.use_components === 'boolean') {
+      setUseNumberComponents(numberConfig.use_components)
+    }
+    if (Array.isArray(numberConfig.components)) {
+      const allowed = new Set(NUMBER_COMPONENTS.map((component) => component.key))
+      const filtered = numberConfig.components.filter((item) => allowed.has(item))
+      if (filtered.length) {
+        setSelectedNumberComponents(filtered)
+      }
+    } else if (numberConfig.use_components) {
+      setSelectedNumberComponents(NUMBER_COMPONENTS.map((component) => component.key))
+    }
+
+    const familyConfig = config.family || {}
+    if (Array.isArray(familyConfig.levels) && familyConfig.levels.length) {
+      setFamilyLevels(familyConfig.levels)
+    }
+    if (Array.isArray(familyConfig.modes) && familyConfig.modes.length) {
+      setFamilyModes(familyConfig.modes)
+    }
+    if (Array.isArray(familyConfig.cases) && familyConfig.cases.length) {
+      setFamilyCases(familyConfig.cases)
+    }
+    if (typeof familyConfig.include_plural === 'boolean') {
+      setFamilyIncludePlural(familyConfig.include_plural)
+    }
+  }
+
+  const activateCollection = async (payload) => {
+    const next = {
+      collectionId: payload.collection_id,
+      collectionTitle: payload.title,
+      collectionDescription: payload.description,
+      ownerName: payload.owner_name,
+      versionId: payload.version_id,
+      versionNumber: payload.version_number,
+      versionTitle: payload.version_title,
+      versionDescription: payload.version_description,
+      accessCode: payload.access_code,
+      visibility: payload.visibility,
+      config: payload.config || {},
+    }
+    setActiveCollection(next)
+    localStorage.setItem(ACTIVE_COLLECTION_STORAGE_KEY, JSON.stringify(next))
+    applyCollectionConfig(next.config)
+    await refreshModules(next.versionId)
+    resetCycleState()
+    setStats(null)
+    setShowResultsModal(false)
+    setResultsItems([])
+    setResultsFilter('')
+  }
+
+  const activateOwnerVersion = async (collection, version) => {
+    const next = {
+      collectionId: collection.id,
+      collectionTitle: collection.title,
+      collectionDescription: collection.description,
+      ownerName: selectedUser?.name || '',
+      versionId: version.id,
+      versionNumber: version.version_number,
+      versionTitle: version.title,
+      versionDescription: version.description,
+      accessCode: version.access_code,
+      visibility: version.visibility,
+      config: version.config || {},
+    }
+    setActiveCollection(next)
+    localStorage.setItem(ACTIVE_COLLECTION_STORAGE_KEY, JSON.stringify(next))
+    applyCollectionConfig(next.config)
+    await refreshModules(next.versionId)
+    resetCycleState()
+    setStats(null)
+    setShowResultsModal(false)
+    setResultsItems([])
+    setResultsFilter('')
+  }
+
+  const clearActiveCollection = async () => {
+    setActiveCollection(null)
+    localStorage.removeItem(ACTIVE_COLLECTION_STORAGE_KEY)
+    await refreshModules(null)
+    loadStoredSettings()
+    resetCycleState()
+    setStats(null)
+    setSelectedModule(null)
+    setShowResultsModal(false)
+    setResultsItems([])
+    setResultsFilter('')
+  }
+
+  const loadPublicCollections = useCallback(async () => {
+    try {
+      const data = await apiFetch('/collections/public')
+      setPublicCollections(data)
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [])
+
+  const loadOwnerCollections = useCallback(async (userId) => {
+    try {
+      const data = await apiFetch(`/collections/owner/${userId}`)
+      setOwnerCollections(data)
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [])
+
+  const handleResolveCollectionCode = async () => {
+    if (!collectionCode.trim()) return
+    setCollectionBusy(true)
+    setError('')
+    try {
+      const data = await apiFetch(`/collections/code/${collectionCode.trim().toUpperCase()}`)
+      await activateCollection(data)
+      setCollectionCode('')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollectionBusy(false)
+    }
+  }
+
+  const handleCreateCollection = async (event) => {
+    event.preventDefault()
+    if (!selectedUser || isAnonymous) return
+    if (!newCollection.title.trim()) {
+      setError('Vnesi naziv zbirke.')
+      return
+    }
+    setCollectionBusy(true)
+    setError('')
+    try {
+      await apiFetch('/collections', {
+        method: 'POST',
+        body: {
+          owner_user_id: selectedUser.id,
+          title: newCollection.title.trim(),
+          description: newCollection.description.trim(),
+        },
+      })
+      setNewCollection({ title: '', description: '' })
+      await loadOwnerCollections(selectedUser.id)
+      await loadPublicCollections()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollectionBusy(false)
+    }
+  }
+
+  const openVersionForm = (collectionId) => {
+    setVersionForm({
+      collectionId,
+      title: '',
+      description: '',
+      visibility: 'draft',
+      modules: COLLECTION_MODULES.map((module) => module.key),
+    })
+  }
+
+  const closeVersionForm = () => {
+    setVersionForm((prev) => ({ ...prev, collectionId: null }))
+  }
+
+  const toggleVersionModule = (key) => {
+    setVersionForm((prev) => {
+      const exists = prev.modules.includes(key)
+      const modules = exists ? prev.modules.filter((item) => item !== key) : [...prev.modules, key]
+      return { ...prev, modules }
+    })
+  }
+
+  const buildCollectionConfig = () => {
+    const modules = versionForm.modules
+    if (!modules.length) {
+      setError('Izberi vsaj en modul.')
+      return null
+    }
+    const config = { modules }
+    if (modules.includes('noun')) {
+      config.noun = { scope: 'all' }
+    }
+    if (modules.includes('verb')) {
+      config.verb = { scope: 'all' }
+    }
+    if (modules.includes('number')) {
+      const trimmedMax = numberMax.trim()
+      if (!trimmedMax) {
+        setError('Vnesi največjo številko za števila.')
+        return null
+      }
+      const parsed = Number(trimmedMax)
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > NUMBER_MAX_LIMIT) {
+        setError(`Največja številka mora biti celo število ≤ ${NUMBER_MAX_LIMIT}.`)
+        return null
+      }
+      const trimmedSize = numberCycleSize.trim()
+      if (!trimmedSize) {
+        setError('Vnesi velikost cikla za števila.')
+        return null
+      }
+      const sizeParsed = Number(trimmedSize)
+      if (!Number.isInteger(sizeParsed) || sizeParsed < 1) {
+        setError('Velikost cikla mora biti celo število ≥ 1.')
+        return null
+      }
+      if (useNumberComponents && selectedNumberComponents.length === 0) {
+        setError('Izberi vsaj eno komponento števil.')
+        return null
+      }
+      config.number = {
+        max_number: parsed,
+        cycle_size: sizeParsed,
+        use_components: useNumberComponents,
+        components: useNumberComponents ? selectedNumberComponents : null,
+      }
+    }
+    if (modules.includes('family')) {
+      if (familyLevels.length === 0) {
+        setError('Izberi vsaj eno stopnjo za družino.')
+        return null
+      }
+      if (familyModes.length === 0) {
+        setError('Izberi vsaj en način vadbe za družino.')
+        return null
+      }
+      const effectiveCases = familyLevels.includes('A2') ? familyCases : ['nominative']
+      if (familyModes.includes('phrase') && effectiveCases.length === 0) {
+        setError('Izberi vsaj en sklon za družino.')
+        return null
+      }
+      config.family = {
+        levels: familyLevels,
+        modes: familyModes,
+        cases: effectiveCases,
+        include_plural: familyIncludePlural,
+      }
+    }
+    return config
+  }
+
+  const handleCreateVersion = async (event) => {
+    event.preventDefault()
+    if (!selectedUser || isAnonymous) return
+    if (!versionForm.collectionId) return
+    if (!versionForm.modules.length) {
+      setError('Izberi vsaj en modul.')
+      return
+    }
+    const config = buildCollectionConfig()
+    if (!config) return
+    setCollectionBusy(true)
+    setError('')
+    try {
+      await apiFetch(`/collections/${versionForm.collectionId}/versions`, {
+        method: 'POST',
+        body: {
+          owner_user_id: selectedUser.id,
+          title: versionForm.title.trim() || null,
+          description: versionForm.description.trim(),
+          visibility: versionForm.visibility,
+          config,
+        },
+      })
+      closeVersionForm()
+      await loadOwnerCollections(selectedUser.id)
+      await loadPublicCollections()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setCollectionBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    loadUsersAndModules()
+  }, [loadUsersAndModules])
+
+  useEffect(() => {
+    if (selectedUser && selectedModule) {
+      loadStats(selectedModule)
+    } else {
+      setStats(null)
+    }
+  }, [selectedUser, selectedModule, activeCollectionId])
+
+  useEffect(() => {
+    loadPublicCollections()
+  }, [loadPublicCollections])
+
+  useEffect(() => {
+    const stored = localStorage.getItem(ACTIVE_COLLECTION_STORAGE_KEY)
+    if (!stored) return
+    try {
+      const parsed = JSON.parse(stored)
+      if (!parsed?.versionId) {
+        localStorage.removeItem(ACTIVE_COLLECTION_STORAGE_KEY)
+        return
+      }
+      setActiveCollection(parsed)
+      applyCollectionConfig(parsed.config || {})
+      apiFetch(`/modules?collection_version_id=${parsed.versionId}`)
+        .then((moduleData) => setModules(moduleData))
+        .catch((err) => setError(err.message))
+    } catch (err) {
+      localStorage.removeItem(ACTIVE_COLLECTION_STORAGE_KEY)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (selectedUser && !isAnonymous) {
+      loadOwnerCollections(selectedUser.id)
+    } else {
+      setOwnerCollections([])
+    }
+  }, [selectedUser, isAnonymous, loadOwnerCollections])
 
   const handleCreateUser = async (event) => {
     event.preventDefault()
@@ -542,6 +909,9 @@ function App() {
         word_type: selectedModule,
         include_solutions: true,
       }
+      if (activeCollectionId) {
+        body.collection_version_id = activeCollectionId
+      }
       if (maxNumberPayload !== null) {
         body.max_number = maxNumberPayload
       }
@@ -591,6 +961,7 @@ function App() {
           user_id: selectedUser.id,
           item_id: currentQuestion.id,
           word_type: selectedModule,
+          collection_version_id: activeCollectionId || undefined,
           answers: answersPayload,
           revealed: revealedFlag,
           cycle_number: cycle.cycle_number,
@@ -683,6 +1054,7 @@ function App() {
         body: {
           user_id: selectedUser.id,
           word_type: selectedModule,
+          collection_version_id: activeCollectionId || undefined,
         },
       })
       await loadStats(selectedModule)
@@ -822,6 +1194,9 @@ function App() {
       familyLevels.forEach((level) => params.append('levels', level))
       effectiveCases.forEach((item) => params.append('cases', item))
       familyModes.forEach((mode) => params.append('modes', mode))
+      if (activeCollectionId) {
+        params.set('collection_version_id', String(activeCollectionId))
+      }
       familyQuery = params.toString()
     }
     setShowResultsModal(true)
@@ -830,12 +1205,33 @@ function App() {
     setResultsItems([])
     setError('')
     try {
-      const endpoint =
-        wordType === 'number'
-          ? `/numbers/results?include_solution=true&user_id=${selectedUser.id}&max_number=${maxNumberParam}`
-          : wordType === 'family'
-            ? `/family/results?${familyQuery}`
-          : `/items?word_type=${wordType}&include_solution=true&user_id=${selectedUser.id}`
+      const endpoint = (() => {
+        if (wordType === 'number') {
+          const params = new URLSearchParams({
+            include_solution: 'true',
+            user_id: String(selectedUser.id),
+          })
+          if (maxNumberParam !== null) {
+            params.set('max_number', String(maxNumberParam))
+          }
+          if (activeCollectionId) {
+            params.set('collection_version_id', String(activeCollectionId))
+          }
+          return `/numbers/results?${params.toString()}`
+        }
+        if (wordType === 'family') {
+          return `/family/results?${familyQuery}`
+        }
+        const params = new URLSearchParams({
+          word_type: wordType,
+          include_solution: 'true',
+          user_id: String(selectedUser.id),
+        })
+        if (activeCollectionId) {
+          params.set('collection_version_id', String(activeCollectionId))
+        }
+        return `/items?${params.toString()}`
+      })()
       const data = await apiFetch(endpoint)
       const sorted = [...data].sort((a, b) => {
         const aAttempts = a.attempts || 0
@@ -1100,47 +1496,61 @@ function App() {
         <div className="panel">
           <h2>1. Izberi uporabnika</h2>
           {isLoadingData && <p className="hint">Nalagam uporabnike in sklope ...</p>}
-          {users.length === 0 ? (
-            <p>Začni tako, da ustvariš prvega uporabnika.</p>
-          ) : (
-            <div className="pill-list">
-              {users.map((user) => {
-                const isActive = selectedUser?.id === user.id
-                return (
-                  <div
-                    key={user.id}
-                    className={`pill ${isActive ? 'active' : ''}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelectedUser(user)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        setSelectedUser(user)
-                      }
-                    }}
-                  >
-                    <div>
-                      <span>{user.name}</span>
-                      <span className="pill-meta">ID: {user.id}</span>
-                    </div>
-                    <button
-                      type="button"
-                      className="remove-btn"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        handleDeleteUser(user.id)
-                      }}
-                      disabled={isBusy}
-                      aria-label={`Izbriši uporabnika ${user.name}`}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                )
-              })}
+          {users.length === 0 && <p>Začni tako, da ustvariš prvega uporabnika.</p>}
+          <div className="pill-list">
+            <div
+              className={`pill ${isAnonymous ? 'active' : ''}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => setSelectedUser(ANONYMOUS_USER)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setSelectedUser(ANONYMOUS_USER)
+                }
+              }}
+            >
+              <div>
+                <span>Anonimno</span>
+                <span className="pill-meta">Brez shranjevanja napredka</span>
+              </div>
             </div>
-          )}
+            {users.map((user) => {
+              const isActive = selectedUser?.id === user.id
+              return (
+                <div
+                  key={user.id}
+                  className={`pill ${isActive ? 'active' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedUser(user)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setSelectedUser(user)
+                    }
+                  }}
+                >
+                  <div>
+                    <span>{user.name}</span>
+                    <span className="pill-meta">ID: {user.id}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="remove-btn"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      handleDeleteUser(user.id)
+                    }}
+                    disabled={isBusy}
+                    aria-label={`Izbriši uporabnika ${user.name}`}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )
+            })}
+          </div>
           <form className="inline-form" onSubmit={handleCreateUser}>
             <input
               type="text"
@@ -1155,7 +1565,246 @@ function App() {
         </div>
 
         <div className="panel">
-          <h2>2. Izberi sklop</h2>
+          <h2>2. Zbirke</h2>
+          {activeCollection ? (
+            <div className="collection-active">
+              <div>
+                <strong>{activeCollection.collectionTitle}</strong>{' '}
+                <span className="pill-meta">v{activeCollection.versionNumber}</span>
+              </div>
+              {activeCollection.ownerName && (
+                <span className="pill-meta">Avtor: {activeCollection.ownerName}</span>
+              )}
+              {activeCollection.versionTitle && (
+                <span className="pill-meta">Verzija: {activeCollection.versionTitle}</span>
+              )}
+              {(activeCollection.versionDescription || activeCollection.collectionDescription) && (
+                <span className="hint">
+                  {activeCollection.versionDescription || activeCollection.collectionDescription}
+                </span>
+              )}
+              {activeCollection.accessCode && (
+                <span className="pill-meta">Koda: {activeCollection.accessCode}</span>
+              )}
+              <button type="button" className="btn ghost small" onClick={clearActiveCollection}>
+                Zapri zbirko
+              </button>
+            </div>
+          ) : (
+            <p className="hint">Ni izbrane zbirke (uporabljaš osnovni nabor).</p>
+          )}
+
+          <div className="inline-form">
+            <input
+              type="text"
+              placeholder="Koda zbirke"
+              value={collectionCode}
+              onChange={(event) => setCollectionCode(event.target.value)}
+            />
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={handleResolveCollectionCode}
+              disabled={collectionBusy || !collectionCode.trim()}
+            >
+              Odpri
+            </button>
+          </div>
+
+          <div className="collection-section">
+            <p className="section-title">Javne zbirke</p>
+            {publicCollections.length === 0 ? (
+              <p className="hint">Trenutno ni javno objavljenih zbirk.</p>
+            ) : (
+              <div className="collection-list">
+                {publicCollections.map((item) => (
+                  <div key={item.version_id} className="collection-card">
+                    <div className="collection-card-main">
+                      <strong>{item.title}</strong>{' '}
+                      <span className="pill-meta">v{item.version_number}</span>
+                      {item.version_title && (
+                        <span className="pill-meta">{item.version_title}</span>
+                      )}
+                      <span className="pill-meta">Avtor: {item.owner_name}</span>
+                      {(item.version_description || item.description) && (
+                        <span className="hint">
+                          {item.version_description || item.description}
+                        </span>
+                      )}
+                    </div>
+                    <div className="collection-actions">
+                      <button
+                        type="button"
+                        className="btn secondary small"
+                        onClick={() => activateCollection(item)}
+                        disabled={collectionBusy}
+                      >
+                        Odpri
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {canManageCollections ? (
+            <div className="collection-section">
+              <p className="section-title">Moje zbirke</p>
+              <form className="collection-form" onSubmit={handleCreateCollection}>
+                <input
+                  type="text"
+                  placeholder="Naziv zbirke"
+                  value={newCollection.title}
+                  onChange={(event) =>
+                    setNewCollection((prev) => ({ ...prev, title: event.target.value }))
+                  }
+                />
+                <input
+                  type="text"
+                  placeholder="Opis (neobvezno)"
+                  value={newCollection.description}
+                  onChange={(event) =>
+                    setNewCollection((prev) => ({ ...prev, description: event.target.value }))
+                  }
+                />
+                <button type="submit" className="btn primary small" disabled={collectionBusy}>
+                  Ustvari zbirko
+                </button>
+              </form>
+
+              {ownerCollections.length === 0 ? (
+                <p className="hint">Še nimaš ustvarjenih zbirk.</p>
+              ) : (
+                <div className="collection-list">
+                  {ownerCollections.map((entry) => (
+                    <div key={entry.collection.id} className="collection-card">
+                      <div className="collection-card-main">
+                        <strong>{entry.collection.title}</strong>
+                        {entry.collection.description && (
+                          <span className="hint">{entry.collection.description}</span>
+                        )}
+                      </div>
+                      <div className="collection-actions">
+                        <button
+                          type="button"
+                          className="btn ghost small"
+                          onClick={() => openVersionForm(entry.collection.id)}
+                          disabled={collectionBusy}
+                        >
+                          Nova verzija
+                        </button>
+                      </div>
+                      <div className="collection-versions">
+                        {entry.versions.map((version) => (
+                          <div key={version.id} className="collection-version">
+                            <div>
+                              <span className="pill-meta">v{version.version_number}</span>
+                              {version.title && (
+                                <span className="pill-meta">{version.title}</span>
+                              )}
+                              <span className="pill-meta">{version.visibility}</span>
+                              {version.access_code && (
+                                <span className="pill-meta">Koda: {version.access_code}</span>
+                              )}
+                            </div>
+                            <div className="collection-actions">
+                              <button
+                                type="button"
+                                className="btn secondary small"
+                                onClick={() => activateOwnerVersion(entry.collection, version)}
+                                disabled={collectionBusy}
+                              >
+                                Odpri
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {versionForm.collectionId === entry.collection.id && (
+                        <form className="version-form" onSubmit={handleCreateVersion}>
+                          <input
+                            type="text"
+                            placeholder="Naziv verzije (neobvezno)"
+                            value={versionForm.title}
+                            onChange={(event) =>
+                              setVersionForm((prev) => ({ ...prev, title: event.target.value }))
+                            }
+                          />
+                          <input
+                            type="text"
+                            placeholder="Opis verzije"
+                            value={versionForm.description}
+                            onChange={(event) =>
+                              setVersionForm((prev) => ({
+                                ...prev,
+                                description: event.target.value,
+                              }))
+                            }
+                          />
+                          <label className="select-row">
+                            <span>Vidnost</span>
+                            <select
+                              value={versionForm.visibility}
+                              onChange={(event) =>
+                                setVersionForm((prev) => ({
+                                  ...prev,
+                                  visibility: event.target.value,
+                                }))
+                              }
+                            >
+                              <option value="draft">Osnutek</option>
+                              <option value="unlisted">Neobjavljeno</option>
+                              <option value="public">Javno</option>
+                            </select>
+                          </label>
+                          <div className="collection-modules">
+                            {COLLECTION_MODULES.map((module) => (
+                              <label key={module.key} className="family-option">
+                                <input
+                                  type="checkbox"
+                                  checked={versionForm.modules.includes(module.key)}
+                                  onChange={() => toggleVersionModule(module.key)}
+                                />
+                                <span>{module.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                          <span className="hint">
+                            Nastavitve za števila in družino vzamem iz trenutnih nastavitev.
+                          </span>
+                          <div className="collection-actions">
+                            <button
+                              type="submit"
+                              className="btn primary small"
+                              disabled={collectionBusy}
+                            >
+                              Shrani verzijo
+                            </button>
+                            <button
+                              type="button"
+                              className="btn ghost small"
+                              onClick={closeVersionForm}
+                              disabled={collectionBusy}
+                            >
+                              Prekliči
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="hint">Za ustvarjanje zbirk izberi prijavljenega uporabnika.</p>
+          )}
+        </div>
+
+        <div className="panel">
+          <h2>3. Izberi sklop</h2>
           <div className="pill-list">
             {modules.map((module) => {
               const isNumberModule = module.type === 'number'
@@ -1178,7 +1827,7 @@ function App() {
                         type="button"
                         className="btn csv-btn"
                         onClick={() => triggerCsvDialog(module.type)}
-                        disabled={isImporting}
+                        disabled={isImporting || !canEditItems}
                       >
                         Uvozi CSV
                       </button>
@@ -1186,7 +1835,7 @@ function App() {
                         type="button"
                         className="btn outline-btn"
                         onClick={() => toggleModuleItems(module.type)}
-                        disabled={isLoadingItems}
+                        disabled={isLoadingItems || !canEditItems}
                       >
                         Uredi seznam
                       </button>
@@ -1245,6 +1894,7 @@ function App() {
                   max={NUMBER_MAX_LIMIT}
                   value={numberMax}
                   onChange={(event) => setNumberMax(event.target.value)}
+                  disabled={Boolean(activeCollectionId)}
                 />
               </label>
               <label>
@@ -1254,6 +1904,7 @@ function App() {
                   min="1"
                   value={numberCycleSize}
                   onChange={(event) => setNumberCycleSize(event.target.value)}
+                  disabled={Boolean(activeCollectionId)}
                 />
               </label>
               <div className="component-toggle">
@@ -1262,6 +1913,7 @@ function App() {
                     type="checkbox"
                     checked={useNumberComponents}
                     onChange={(event) => setUseNumberComponents(event.target.checked)}
+                    disabled={Boolean(activeCollectionId)}
                   />
                   <span>Učenje po komponentah</span>
                 </label>
@@ -1276,7 +1928,10 @@ function App() {
                       type="button"
                       className="btn secondary small"
                       onClick={selectAllNumberComponents}
-                      disabled={selectedNumberComponents.length === NUMBER_COMPONENTS.length}
+                      disabled={
+                        Boolean(activeCollectionId) ||
+                        selectedNumberComponents.length === NUMBER_COMPONENTS.length
+                      }
                     >
                       Izberi vse
                     </button>
@@ -1284,7 +1939,7 @@ function App() {
                       type="button"
                       className="btn ghost small"
                       onClick={clearNumberComponents}
-                      disabled={selectedNumberComponents.length === 0}
+                      disabled={Boolean(activeCollectionId) || selectedNumberComponents.length === 0}
                     >
                       Počisti vse
                     </button>
@@ -1296,6 +1951,7 @@ function App() {
                           type="checkbox"
                           checked={selectedNumberComponents.includes(component.key)}
                           onChange={() => toggleNumberComponent(component.key)}
+                          disabled={Boolean(activeCollectionId)}
                         />
                         <span>{component.label}</span>
                       </label>
@@ -1320,6 +1976,7 @@ function App() {
                         type="checkbox"
                         checked={familyLevels.includes(level.key)}
                         onChange={() => toggleFamilyLevel(level.key)}
+                        disabled={Boolean(activeCollectionId)}
                       />
                       <span>{level.label}</span>
                     </label>
@@ -1335,6 +1992,7 @@ function App() {
                         type="checkbox"
                         checked={familyModes.includes(mode.key)}
                         onChange={() => toggleFamilyMode(mode.key)}
+                        disabled={Boolean(activeCollectionId)}
                       />
                       <span>{mode.label}</span>
                     </label>
@@ -1344,7 +2002,7 @@ function App() {
                       type="checkbox"
                       checked={familyIncludePlural}
                       onChange={(event) => setFamilyIncludePlural(event.target.checked)}
-                      disabled={!familyModes.includes('noun')}
+                      disabled={Boolean(activeCollectionId) || !familyModes.includes('noun')}
                     />
                     <span>Vključi plural pri samostalnikih</span>
                   </label>
@@ -1361,7 +2019,7 @@ function App() {
                           type="checkbox"
                           checked={familyCases.includes(item.key)}
                           onChange={() => toggleFamilyCase(item.key)}
-                          disabled={disabled}
+                          disabled={Boolean(activeCollectionId) || disabled}
                         />
                         <span>{item.label}</span>
                       </label>

@@ -72,6 +72,10 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def is_anonymous_user(user_id: Optional[int]) -> bool:
+    return user_id is None or user_id <= 0
+
+
 def normalize_text(
     value: str,
     allow_umlaut_fallback: bool = False,
@@ -387,6 +391,164 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (user_id),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS collections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            collection_id INTEGER NOT NULL,
+            version_number INTEGER NOT NULL,
+            title TEXT,
+            description TEXT NOT NULL DEFAULT '',
+            config_json TEXT NOT NULL,
+            visibility TEXT NOT NULL CHECK(visibility IN ('draft', 'unlisted', 'public')),
+            access_code TEXT UNIQUE,
+            created_at TEXT NOT NULL,
+            published_at TEXT,
+            FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+            UNIQUE(collection_id, version_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_version_items (
+            collection_version_id INTEGER NOT NULL,
+            item_id INTEGER NOT NULL,
+            PRIMARY KEY (collection_version_id, item_id),
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_user_stats (
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            entry_id INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            wrong INTEGER NOT NULL DEFAULT 0,
+            reveals INTEGER NOT NULL DEFAULT 0,
+            correct_streak INTEGER NOT NULL DEFAULT 0,
+            last_result TEXT,
+            last_seen TEXT,
+            PRIMARY KEY (user_id, collection_version_id, entry_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY (entry_id) REFERENCES items(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            entry_id INTEGER NOT NULL,
+            asked_at TEXT NOT NULL,
+            was_correct INTEGER NOT NULL,
+            was_revealed INTEGER NOT NULL,
+            answers_json TEXT NOT NULL,
+            cycle_number INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY (entry_id) REFERENCES items(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_cycles (
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            word_type TEXT NOT NULL CHECK(word_type IN ('noun', 'verb')),
+            cycles INTEGER NOT NULL DEFAULT 0,
+            last_cycle_at TEXT,
+            PRIMARY KEY (user_id, collection_version_id, word_type),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_number_stats (
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            wrong INTEGER NOT NULL DEFAULT 0,
+            reveals INTEGER NOT NULL DEFAULT 0,
+            correct_streak INTEGER NOT NULL DEFAULT 0,
+            last_result TEXT,
+            last_seen TEXT,
+            PRIMARY KEY (user_id, collection_version_id, number),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_number_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            asked_at TEXT NOT NULL,
+            was_correct INTEGER NOT NULL,
+            was_revealed INTEGER NOT NULL,
+            answers_json TEXT NOT NULL,
+            cycle_number INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_number_cycles (
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            cycles INTEGER NOT NULL DEFAULT 0,
+            last_cycle_at TEXT,
+            PRIMARY KEY (user_id, collection_version_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_family_stats (
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            card_id INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            wrong INTEGER NOT NULL DEFAULT 0,
+            reveals INTEGER NOT NULL DEFAULT 0,
+            correct_streak INTEGER NOT NULL DEFAULT 0,
+            last_result TEXT,
+            last_seen TEXT,
+            PRIMARY KEY (user_id, collection_version_id, card_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY (card_id) REFERENCES family_cards(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_family_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            card_id INTEGER NOT NULL,
+            asked_at TEXT NOT NULL,
+            was_correct INTEGER NOT NULL,
+            was_revealed INTEGER NOT NULL,
+            answers_json TEXT NOT NULL,
+            cycle_number INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE,
+            FOREIGN KEY (card_id) REFERENCES family_cards(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_family_cycles (
+            user_id INTEGER NOT NULL,
+            collection_version_id INTEGER NOT NULL,
+            cycles INTEGER NOT NULL DEFAULT 0,
+            last_cycle_at TEXT,
+            PRIMARY KEY (user_id, collection_version_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (collection_version_id) REFERENCES collection_versions(id) ON DELETE CASCADE
+        );
         """
     )
     conn.commit()
@@ -608,10 +770,15 @@ def get_or_create_user(conn: sqlite3.Connection, name: str) -> int:
 
 
 def fetch_items_with_stats(
-    conn: sqlite3.Connection, user_id: int, word_type: str
+    conn: sqlite3.Connection,
+    user_id: int,
+    word_type: str,
+    collection_version_id: Optional[int] = None,
+    restrict_to_collection_items: bool = False,
 ) -> List[Dict]:
+    stats_table = "collection_user_stats" if collection_version_id else "user_stats"
     rows = conn.execute(
-        """
+        f"""
         SELECT
             i.id,
             i.translation,
@@ -624,11 +791,22 @@ def fetch_items_with_stats(
             COALESCE(s.correct_streak, 0) AS streak,
             s.last_seen AS last_seen
         FROM items i
-        LEFT JOIN user_stats s
+        LEFT JOIN {stats_table} s
             ON s.entry_id = i.id AND s.user_id = ?
+            {"" if collection_version_id is None else "AND s.collection_version_id = ?"}
+        {"" if not (restrict_to_collection_items and collection_version_id) else "JOIN collection_version_items cvi ON cvi.item_id = i.id AND cvi.collection_version_id = ?"}
         WHERE i.type = ?
         """,
-        (user_id, word_type),
+        tuple(
+            [user_id]
+            + ([] if collection_version_id is None else [collection_version_id])
+            + (
+                []
+                if not (restrict_to_collection_items and collection_version_id)
+                else [collection_version_id]
+            )
+            + [word_type]
+        ),
     ).fetchall()
 
     items = []
@@ -682,115 +860,257 @@ def compute_difficulty(item: Dict) -> float:
     return max(diff, 0.1)
 
 
-def fetch_cycle_count(conn: sqlite3.Connection, user_id: int, word_type: str) -> int:
-    row = conn.execute(
-        "SELECT cycles FROM user_cycles WHERE user_id = ? AND word_type = ?",
-        (user_id, word_type),
-    ).fetchone()
+def fetch_cycle_count(
+    conn: sqlite3.Connection,
+    user_id: int,
+    word_type: str,
+    collection_version_id: Optional[int] = None,
+) -> int:
+    if is_anonymous_user(user_id):
+        return 0
+    if collection_version_id is None:
+        row = conn.execute(
+            "SELECT cycles FROM user_cycles WHERE user_id = ? AND word_type = ?",
+            (user_id, word_type),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT cycles
+            FROM collection_cycles
+            WHERE user_id = ? AND collection_version_id = ? AND word_type = ?
+            """,
+            (user_id, collection_version_id, word_type),
+        ).fetchone()
     return int(row["cycles"]) if row else 0
 
 
-def increment_cycle(conn: sqlite3.Connection, user_id: int, word_type: str) -> None:
-    current = fetch_cycle_count(conn, user_id, word_type)
-    if current == 0:
-        conn.execute(
-            """
-            INSERT INTO user_cycles (user_id, word_type, cycles, last_cycle_at)
-            VALUES (?, ?, 1, ?)
-            """,
-            (user_id, word_type, now_iso()),
-        )
+def increment_cycle(
+    conn: sqlite3.Connection,
+    user_id: int,
+    word_type: str,
+    collection_version_id: Optional[int] = None,
+) -> None:
+    if is_anonymous_user(user_id):
+        return
+    current = fetch_cycle_count(conn, user_id, word_type, collection_version_id=collection_version_id)
+    if collection_version_id is None:
+        if current == 0:
+            conn.execute(
+                """
+                INSERT INTO user_cycles (user_id, word_type, cycles, last_cycle_at)
+                VALUES (?, ?, 1, ?)
+                """,
+                (user_id, word_type, now_iso()),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE user_cycles
+                SET cycles = ?, last_cycle_at = ?
+                WHERE user_id = ? AND word_type = ?
+                """,
+                (current + 1, now_iso(), user_id, word_type),
+            )
     else:
-        conn.execute(
-            """
-            UPDATE user_cycles
-            SET cycles = ?, last_cycle_at = ?
-            WHERE user_id = ? AND word_type = ?
-            """,
-            (current + 1, now_iso(), user_id, word_type),
-        )
+        if current == 0:
+            conn.execute(
+                """
+                INSERT INTO collection_cycles (user_id, collection_version_id, word_type, cycles, last_cycle_at)
+                VALUES (?, ?, ?, 1, ?)
+                """,
+                (user_id, collection_version_id, word_type, now_iso()),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE collection_cycles
+                SET cycles = ?, last_cycle_at = ?
+                WHERE user_id = ? AND collection_version_id = ? AND word_type = ?
+                """,
+                (current + 1, now_iso(), user_id, collection_version_id, word_type),
+            )
     conn.commit()
 
 
-def global_accuracy(conn: sqlite3.Connection, user_id: int, word_type: str) -> Tuple[int, float]:
-    row = conn.execute(
-        """
-        SELECT
-            COALESCE(SUM(s.attempts), 0) AS att,
-            COALESCE(SUM(s.correct), 0) AS corr
-        FROM user_stats s
-        JOIN items i ON i.id = s.entry_id
-        WHERE s.user_id = ? AND i.type = ?
-        """,
-        (user_id, word_type),
-    ).fetchone()
+def global_accuracy(
+    conn: sqlite3.Connection,
+    user_id: int,
+    word_type: str,
+    collection_version_id: Optional[int] = None,
+    restrict_to_collection_items: bool = False,
+) -> Tuple[int, float]:
+    if collection_version_id is None:
+        row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(s.attempts), 0) AS att,
+                COALESCE(SUM(s.correct), 0) AS corr
+            FROM user_stats s
+            JOIN items i ON i.id = s.entry_id
+            WHERE s.user_id = ? AND i.type = ?
+            """,
+            (user_id, word_type),
+        ).fetchone()
+    else:
+        join_clause = ""
+        params: List[object] = []
+        if restrict_to_collection_items:
+            join_clause = "JOIN collection_version_items cvi ON cvi.item_id = i.id AND cvi.collection_version_id = ?"
+            params.append(collection_version_id)
+        params.extend([user_id, collection_version_id, word_type])
+        row = conn.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(s.attempts), 0) AS att,
+                COALESCE(SUM(s.correct), 0) AS corr
+            FROM collection_user_stats s
+            JOIN items i ON i.id = s.entry_id
+            {join_clause}
+            WHERE s.user_id = ? AND s.collection_version_id = ? AND i.type = ?
+            """,
+            tuple(params),
+        ).fetchone()
     attempts = int(row["att"])
     accuracy = (row["corr"] / attempts) if attempts else 0.0
     return attempts, accuracy
 
 
-def fetch_number_cycle_count(conn: sqlite3.Connection, user_id: int) -> int:
-    row = conn.execute(
-        "SELECT cycles FROM number_cycles WHERE user_id = ?",
-        (user_id,),
-    ).fetchone()
+def fetch_number_cycle_count(
+    conn: sqlite3.Connection, user_id: int, collection_version_id: Optional[int] = None
+) -> int:
+    if is_anonymous_user(user_id):
+        return 0
+    if collection_version_id is None:
+        row = conn.execute(
+            "SELECT cycles FROM number_cycles WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT cycles
+            FROM collection_number_cycles
+            WHERE user_id = ? AND collection_version_id = ?
+            """,
+            (user_id, collection_version_id),
+        ).fetchone()
     return int(row["cycles"]) if row else 0
 
 
-def increment_number_cycle(conn: sqlite3.Connection, user_id: int) -> None:
-    current = fetch_number_cycle_count(conn, user_id)
-    if current == 0:
-        conn.execute(
-            """
-            INSERT INTO number_cycles (user_id, cycles, last_cycle_at)
-            VALUES (?, 1, ?)
-            """,
-            (user_id, now_iso()),
-        )
+def increment_number_cycle(
+    conn: sqlite3.Connection, user_id: int, collection_version_id: Optional[int] = None
+) -> None:
+    if is_anonymous_user(user_id):
+        return
+    current = fetch_number_cycle_count(conn, user_id, collection_version_id)
+    if collection_version_id is None:
+        if current == 0:
+            conn.execute(
+                """
+                INSERT INTO number_cycles (user_id, cycles, last_cycle_at)
+                VALUES (?, 1, ?)
+                """,
+                (user_id, now_iso()),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE number_cycles
+                SET cycles = ?, last_cycle_at = ?
+                WHERE user_id = ?
+                """,
+                (current + 1, now_iso(), user_id),
+            )
     else:
-        conn.execute(
+        if current == 0:
+            conn.execute(
+                """
+                INSERT INTO collection_number_cycles (user_id, collection_version_id, cycles, last_cycle_at)
+                VALUES (?, ?, 1, ?)
+                """,
+                (user_id, collection_version_id, now_iso()),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE collection_number_cycles
+                SET cycles = ?, last_cycle_at = ?
+                WHERE user_id = ? AND collection_version_id = ?
+                """,
+                (current + 1, now_iso(), user_id, collection_version_id),
+            )
+    conn.commit()
+
+
+def global_number_accuracy(
+    conn: sqlite3.Connection, user_id: int, collection_version_id: Optional[int] = None
+) -> Tuple[int, float]:
+    if collection_version_id is None:
+        row = conn.execute(
             """
-            UPDATE number_cycles
-            SET cycles = ?, last_cycle_at = ?
+            SELECT
+                COALESCE(SUM(attempts), 0) AS att,
+                COALESCE(SUM(correct), 0) AS corr
+            FROM number_stats
             WHERE user_id = ?
             """,
-            (current + 1, now_iso(), user_id),
-        )
-    conn.commit()
-
-
-def global_number_accuracy(conn: sqlite3.Connection, user_id: int) -> Tuple[int, float]:
-    row = conn.execute(
-        """
-        SELECT
-            COALESCE(SUM(attempts), 0) AS att,
-            COALESCE(SUM(correct), 0) AS corr
-        FROM number_stats
-        WHERE user_id = ?
-        """,
-        (user_id,),
-    ).fetchone()
+            (user_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(attempts), 0) AS att,
+                COALESCE(SUM(correct), 0) AS corr
+            FROM collection_number_stats
+            WHERE user_id = ? AND collection_version_id = ?
+            """,
+            (user_id, collection_version_id),
+        ).fetchone()
     attempts = int(row["att"])
     accuracy = (row["corr"] / attempts) if attempts else 0.0
     return attempts, accuracy
 
 
-def fetch_number_stats(conn: sqlite3.Connection, user_id: int, max_number: int) -> Dict[int, Dict]:
-    rows = conn.execute(
-        """
-        SELECT
-            number,
-            attempts,
-            correct,
-            wrong,
-            reveals,
-            correct_streak,
-            last_seen
-        FROM number_stats
-        WHERE user_id = ? AND number <= ?
-        """,
-        (user_id, max_number),
-    ).fetchall()
+def fetch_number_stats(
+    conn: sqlite3.Connection,
+    user_id: int,
+    max_number: int,
+    collection_version_id: Optional[int] = None,
+) -> Dict[int, Dict]:
+    if collection_version_id is None:
+        rows = conn.execute(
+            """
+            SELECT
+                number,
+                attempts,
+                correct,
+                wrong,
+                reveals,
+                correct_streak,
+                last_seen
+            FROM number_stats
+            WHERE user_id = ? AND number <= ?
+            """,
+            (user_id, max_number),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT
+                number,
+                attempts,
+                correct,
+                wrong,
+                reveals,
+                correct_streak,
+                last_seen
+            FROM collection_number_stats
+            WHERE user_id = ? AND collection_version_id = ? AND number <= ?
+            """,
+            (user_id, collection_version_id, max_number),
+        ).fetchall()
     stats_map: Dict[int, Dict] = {}
     for row in rows:
         stats_map[int(row["number"])] = {
@@ -891,47 +1211,98 @@ def choose_number_cycle_numbers(
     return selected
 
 
-def fetch_family_cycle_count(conn: sqlite3.Connection, user_id: int) -> int:
-    row = conn.execute(
-        "SELECT cycles FROM family_cycles WHERE user_id = ?",
-        (user_id,),
-    ).fetchone()
+def fetch_family_cycle_count(
+    conn: sqlite3.Connection, user_id: int, collection_version_id: Optional[int] = None
+) -> int:
+    if is_anonymous_user(user_id):
+        return 0
+    if collection_version_id is None:
+        row = conn.execute(
+            "SELECT cycles FROM family_cycles WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT cycles
+            FROM collection_family_cycles
+            WHERE user_id = ? AND collection_version_id = ?
+            """,
+            (user_id, collection_version_id),
+        ).fetchone()
     return int(row["cycles"]) if row else 0
 
 
-def increment_family_cycle(conn: sqlite3.Connection, user_id: int) -> None:
-    current = fetch_family_cycle_count(conn, user_id)
-    if current == 0:
-        conn.execute(
-            """
-            INSERT INTO family_cycles (user_id, cycles, last_cycle_at)
-            VALUES (?, 1, ?)
-            """,
-            (user_id, now_iso()),
-        )
+def increment_family_cycle(
+    conn: sqlite3.Connection, user_id: int, collection_version_id: Optional[int] = None
+) -> None:
+    if is_anonymous_user(user_id):
+        return
+    current = fetch_family_cycle_count(conn, user_id, collection_version_id)
+    if collection_version_id is None:
+        if current == 0:
+            conn.execute(
+                """
+                INSERT INTO family_cycles (user_id, cycles, last_cycle_at)
+                VALUES (?, 1, ?)
+                """,
+                (user_id, now_iso()),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE family_cycles
+                SET cycles = ?, last_cycle_at = ?
+                WHERE user_id = ?
+                """,
+                (current + 1, now_iso(), user_id),
+            )
     else:
-        conn.execute(
-            """
-            UPDATE family_cycles
-            SET cycles = ?, last_cycle_at = ?
-            WHERE user_id = ?
-            """,
-            (current + 1, now_iso(), user_id),
-        )
+        if current == 0:
+            conn.execute(
+                """
+                INSERT INTO collection_family_cycles (user_id, collection_version_id, cycles, last_cycle_at)
+                VALUES (?, ?, 1, ?)
+                """,
+                (user_id, collection_version_id, now_iso()),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE collection_family_cycles
+                SET cycles = ?, last_cycle_at = ?
+                WHERE user_id = ? AND collection_version_id = ?
+                """,
+                (current + 1, now_iso(), user_id, collection_version_id),
+            )
     conn.commit()
 
 
-def global_family_accuracy(conn: sqlite3.Connection, user_id: int) -> Tuple[int, float]:
-    row = conn.execute(
-        """
-        SELECT
-            COALESCE(SUM(attempts), 0) AS att,
-            COALESCE(SUM(correct), 0) AS corr
-        FROM family_stats
-        WHERE user_id = ?
-        """,
-        (user_id,),
-    ).fetchone()
+def global_family_accuracy(
+    conn: sqlite3.Connection, user_id: int, collection_version_id: Optional[int] = None
+) -> Tuple[int, float]:
+    if collection_version_id is None:
+        row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(attempts), 0) AS att,
+                COALESCE(SUM(correct), 0) AS corr
+            FROM family_stats
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(attempts), 0) AS att,
+                COALESCE(SUM(correct), 0) AS corr
+            FROM collection_family_stats
+            WHERE user_id = ? AND collection_version_id = ?
+            """,
+            (user_id, collection_version_id),
+        ).fetchone()
     attempts = int(row["att"])
     accuracy = (row["corr"] / attempts) if attempts else 0.0
     return attempts, accuracy
@@ -980,10 +1351,14 @@ def fetch_family_cards_with_stats(
     modes: Sequence[str],
     cases: Optional[Sequence[str]] = None,
     include_plural: bool = True,
+    collection_version_id: Optional[int] = None,
 ) -> List[Dict]:
     if not levels or not modes:
         return []
+    stats_table = "collection_family_stats" if collection_version_id else "family_stats"
     params: List[object] = [user_id]
+    if collection_version_id is not None:
+        params.append(collection_version_id)
     level_placeholders = ", ".join("?" * len(levels))
     mode_placeholders = ", ".join("?" * len(modes))
     params.extend(levels)
@@ -1009,8 +1384,9 @@ def fetch_family_cards_with_stats(
         s.last_seen AS last_seen
     FROM family_cards c
     JOIN family_items i ON i.id = c.item_id
-    LEFT JOIN family_stats s
+    LEFT JOIN {stats_table} s
       ON s.card_id = c.id AND s.user_id = ?
+      {"" if collection_version_id is None else "AND s.collection_version_id = ?"}
     WHERE i.level IN ({level_placeholders})
       AND c.mode IN ({mode_placeholders})
     """
@@ -1054,10 +1430,14 @@ def fetch_family_results(
     modes: Sequence[str],
     cases: Optional[Sequence[str]] = None,
     include_plural: bool = True,
+    collection_version_id: Optional[int] = None,
 ) -> List[Dict]:
     if not levels or not modes:
         return []
+    stats_table = "collection_family_stats" if collection_version_id else "family_stats"
     params: List[object] = [user_id]
+    if collection_version_id is not None:
+        params.append(collection_version_id)
     level_placeholders = ", ".join("?" * len(levels))
     mode_placeholders = ", ".join("?" * len(modes))
     params.extend(levels)
@@ -1081,10 +1461,11 @@ def fetch_family_results(
         s.reveals,
         s.correct_streak,
         s.last_seen
-    FROM family_stats s
+    FROM {stats_table} s
     JOIN family_cards c ON c.id = s.card_id
     JOIN family_items i ON i.id = c.item_id
     WHERE s.user_id = ?
+      {"" if collection_version_id is None else "AND s.collection_version_id = ?"}
       AND i.level IN ({level_placeholders})
       AND c.mode IN ({mode_placeholders})
     """
@@ -1327,56 +1708,125 @@ def update_progress(
     revealed: bool,
     answers: Sequence[str],
     cycle_number: int,
+    collection_version_id: Optional[int] = None,
 ) -> None:
+    if is_anonymous_user(user_id):
+        return
     now = now_iso()
     result_label = "correct" if correct else ("revealed" if revealed else "wrong")
     correct_value = 1 if correct else 0
     wrong_value = 0 if correct else 1
     reveal_value = 1 if revealed else 0
-    conn.execute(
-        """
-        INSERT INTO user_stats (
-            user_id, entry_id, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+    if collection_version_id is None:
+        conn.execute(
+            """
+            INSERT INTO user_stats (
+                user_id, entry_id, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+            )
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, entry_id) DO UPDATE SET
+                attempts = user_stats.attempts + 1,
+                correct = user_stats.correct + excluded.correct,
+                wrong = user_stats.wrong + excluded.wrong,
+                reveals = user_stats.reveals + excluded.reveals,
+                correct_streak = CASE
+                    WHEN excluded.last_result = 'correct' THEN user_stats.correct_streak + 1
+                    ELSE 0
+                END,
+                last_result = excluded.last_result,
+                last_seen = excluded.last_seen
+            """,
+            (
+                user_id,
+                item_id,
+                correct_value,
+                wrong_value,
+                reveal_value,
+                1 if correct else 0,
+                result_label,
+                now,
+            ),
         )
-        VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(user_id, entry_id) DO UPDATE SET
-            attempts = user_stats.attempts + 1,
-            correct = user_stats.correct + excluded.correct,
-            wrong = user_stats.wrong + excluded.wrong,
-            reveals = user_stats.reveals + excluded.reveals,
-            correct_streak = CASE
-                WHEN excluded.last_result = 'correct' THEN user_stats.correct_streak + 1
-                ELSE 0
-            END,
-            last_result = excluded.last_result,
-            last_seen = excluded.last_seen
-        """,
-        (
-            user_id,
-            item_id,
-            correct_value,
-            wrong_value,
-            reveal_value,
-            1 if correct else 0,
-            result_label,
-            now,
-        ),
-    )
-    conn.execute(
-        """
-        INSERT INTO attempts (user_id, entry_id, asked_at, was_correct, was_revealed, answers_json, cycle_number)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            item_id,
-            now,
-            correct_value,
-            reveal_value,
-            json.dumps(list(answers)),
-            cycle_number,
-        ),
-    )
+        conn.execute(
+            """
+            INSERT INTO attempts (user_id, entry_id, asked_at, was_correct, was_revealed, answers_json, cycle_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                item_id,
+                now,
+                correct_value,
+                reveal_value,
+                json.dumps(list(answers)),
+                cycle_number,
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO collection_user_stats (
+                user_id,
+                collection_version_id,
+                entry_id,
+                attempts,
+                correct,
+                wrong,
+                reveals,
+                correct_streak,
+                last_result,
+                last_seen
+            )
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, collection_version_id, entry_id) DO UPDATE SET
+                attempts = collection_user_stats.attempts + 1,
+                correct = collection_user_stats.correct + excluded.correct,
+                wrong = collection_user_stats.wrong + excluded.wrong,
+                reveals = collection_user_stats.reveals + excluded.reveals,
+                correct_streak = CASE
+                    WHEN excluded.last_result = 'correct' THEN collection_user_stats.correct_streak + 1
+                    ELSE 0
+                END,
+                last_result = excluded.last_result,
+                last_seen = excluded.last_seen
+            """,
+            (
+                user_id,
+                collection_version_id,
+                item_id,
+                correct_value,
+                wrong_value,
+                reveal_value,
+                1 if correct else 0,
+                result_label,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO collection_attempts (
+                user_id,
+                collection_version_id,
+                entry_id,
+                asked_at,
+                was_correct,
+                was_revealed,
+                answers_json,
+                cycle_number
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                collection_version_id,
+                item_id,
+                now,
+                correct_value,
+                reveal_value,
+                json.dumps(list(answers)),
+                cycle_number,
+            ),
+        )
     conn.commit()
 
 
@@ -1388,56 +1838,125 @@ def update_number_progress(
     revealed: bool,
     answers: Sequence[str],
     cycle_number: int,
+    collection_version_id: Optional[int] = None,
 ) -> None:
+    if is_anonymous_user(user_id):
+        return
     now = now_iso()
     result_label = "correct" if correct else ("revealed" if revealed else "wrong")
     correct_value = 1 if correct else 0
     wrong_value = 0 if correct else 1
     reveal_value = 1 if revealed else 0
-    conn.execute(
-        """
-        INSERT INTO number_stats (
-            user_id, number, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+    if collection_version_id is None:
+        conn.execute(
+            """
+            INSERT INTO number_stats (
+                user_id, number, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+            )
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, number) DO UPDATE SET
+                attempts = number_stats.attempts + 1,
+                correct = number_stats.correct + excluded.correct,
+                wrong = number_stats.wrong + excluded.wrong,
+                reveals = number_stats.reveals + excluded.reveals,
+                correct_streak = CASE
+                    WHEN excluded.last_result = 'correct' THEN number_stats.correct_streak + 1
+                    ELSE 0
+                END,
+                last_result = excluded.last_result,
+                last_seen = excluded.last_seen
+            """,
+            (
+                user_id,
+                number,
+                correct_value,
+                wrong_value,
+                reveal_value,
+                1 if correct else 0,
+                result_label,
+                now,
+            ),
         )
-        VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(user_id, number) DO UPDATE SET
-            attempts = number_stats.attempts + 1,
-            correct = number_stats.correct + excluded.correct,
-            wrong = number_stats.wrong + excluded.wrong,
-            reveals = number_stats.reveals + excluded.reveals,
-            correct_streak = CASE
-                WHEN excluded.last_result = 'correct' THEN number_stats.correct_streak + 1
-                ELSE 0
-            END,
-            last_result = excluded.last_result,
-            last_seen = excluded.last_seen
-        """,
-        (
-            user_id,
-            number,
-            correct_value,
-            wrong_value,
-            reveal_value,
-            1 if correct else 0,
-            result_label,
-            now,
-        ),
-    )
-    conn.execute(
-        """
-        INSERT INTO number_attempts (user_id, number, asked_at, was_correct, was_revealed, answers_json, cycle_number)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            number,
-            now,
-            correct_value,
-            reveal_value,
-            json.dumps(list(answers)),
-            cycle_number,
-        ),
-    )
+        conn.execute(
+            """
+            INSERT INTO number_attempts (user_id, number, asked_at, was_correct, was_revealed, answers_json, cycle_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                number,
+                now,
+                correct_value,
+                reveal_value,
+                json.dumps(list(answers)),
+                cycle_number,
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO collection_number_stats (
+                user_id,
+                collection_version_id,
+                number,
+                attempts,
+                correct,
+                wrong,
+                reveals,
+                correct_streak,
+                last_result,
+                last_seen
+            )
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, collection_version_id, number) DO UPDATE SET
+                attempts = collection_number_stats.attempts + 1,
+                correct = collection_number_stats.correct + excluded.correct,
+                wrong = collection_number_stats.wrong + excluded.wrong,
+                reveals = collection_number_stats.reveals + excluded.reveals,
+                correct_streak = CASE
+                    WHEN excluded.last_result = 'correct' THEN collection_number_stats.correct_streak + 1
+                    ELSE 0
+                END,
+                last_result = excluded.last_result,
+                last_seen = excluded.last_seen
+            """,
+            (
+                user_id,
+                collection_version_id,
+                number,
+                correct_value,
+                wrong_value,
+                reveal_value,
+                1 if correct else 0,
+                result_label,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO collection_number_attempts (
+                user_id,
+                collection_version_id,
+                number,
+                asked_at,
+                was_correct,
+                was_revealed,
+                answers_json,
+                cycle_number
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                collection_version_id,
+                number,
+                now,
+                correct_value,
+                reveal_value,
+                json.dumps(list(answers)),
+                cycle_number,
+            ),
+        )
     conn.commit()
 
 
@@ -1449,56 +1968,125 @@ def update_family_progress(
     revealed: bool,
     answers: Sequence[str],
     cycle_number: int,
+    collection_version_id: Optional[int] = None,
 ) -> None:
+    if is_anonymous_user(user_id):
+        return
     now = now_iso()
     result_label = "correct" if correct else ("revealed" if revealed else "wrong")
     correct_value = 1 if correct else 0
     wrong_value = 0 if correct else 1
     reveal_value = 1 if revealed else 0
-    conn.execute(
-        """
-        INSERT INTO family_stats (
-            user_id, card_id, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+    if collection_version_id is None:
+        conn.execute(
+            """
+            INSERT INTO family_stats (
+                user_id, card_id, attempts, correct, wrong, reveals, correct_streak, last_result, last_seen
+            )
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, card_id) DO UPDATE SET
+                attempts = family_stats.attempts + 1,
+                correct = family_stats.correct + excluded.correct,
+                wrong = family_stats.wrong + excluded.wrong,
+                reveals = family_stats.reveals + excluded.reveals,
+                correct_streak = CASE
+                    WHEN excluded.last_result = 'correct' THEN family_stats.correct_streak + 1
+                    ELSE 0
+                END,
+                last_result = excluded.last_result,
+                last_seen = excluded.last_seen
+            """,
+            (
+                user_id,
+                card_id,
+                correct_value,
+                wrong_value,
+                reveal_value,
+                1 if correct else 0,
+                result_label,
+                now,
+            ),
         )
-        VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(user_id, card_id) DO UPDATE SET
-            attempts = family_stats.attempts + 1,
-            correct = family_stats.correct + excluded.correct,
-            wrong = family_stats.wrong + excluded.wrong,
-            reveals = family_stats.reveals + excluded.reveals,
-            correct_streak = CASE
-                WHEN excluded.last_result = 'correct' THEN family_stats.correct_streak + 1
-                ELSE 0
-            END,
-            last_result = excluded.last_result,
-            last_seen = excluded.last_seen
-        """,
-        (
-            user_id,
-            card_id,
-            correct_value,
-            wrong_value,
-            reveal_value,
-            1 if correct else 0,
-            result_label,
-            now,
-        ),
-    )
-    conn.execute(
-        """
-        INSERT INTO family_attempts (user_id, card_id, asked_at, was_correct, was_revealed, answers_json, cycle_number)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            card_id,
-            now,
-            correct_value,
-            reveal_value,
-            json.dumps(list(answers)),
-            cycle_number,
-        ),
-    )
+        conn.execute(
+            """
+            INSERT INTO family_attempts (user_id, card_id, asked_at, was_correct, was_revealed, answers_json, cycle_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                card_id,
+                now,
+                correct_value,
+                reveal_value,
+                json.dumps(list(answers)),
+                cycle_number,
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO collection_family_stats (
+                user_id,
+                collection_version_id,
+                card_id,
+                attempts,
+                correct,
+                wrong,
+                reveals,
+                correct_streak,
+                last_result,
+                last_seen
+            )
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, collection_version_id, card_id) DO UPDATE SET
+                attempts = collection_family_stats.attempts + 1,
+                correct = collection_family_stats.correct + excluded.correct,
+                wrong = collection_family_stats.wrong + excluded.wrong,
+                reveals = collection_family_stats.reveals + excluded.reveals,
+                correct_streak = CASE
+                    WHEN excluded.last_result = 'correct' THEN collection_family_stats.correct_streak + 1
+                    ELSE 0
+                END,
+                last_result = excluded.last_result,
+                last_seen = excluded.last_seen
+            """,
+            (
+                user_id,
+                collection_version_id,
+                card_id,
+                correct_value,
+                wrong_value,
+                reveal_value,
+                1 if correct else 0,
+                result_label,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO collection_family_attempts (
+                user_id,
+                collection_version_id,
+                card_id,
+                asked_at,
+                was_correct,
+                was_revealed,
+                answers_json,
+                cycle_number
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                collection_version_id,
+                card_id,
+                now,
+                correct_value,
+                reveal_value,
+                json.dumps(list(answers)),
+                cycle_number,
+            ),
+        )
     conn.commit()
 
 
